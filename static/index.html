@@ -477,7 +477,7 @@ async function onScanDone(count) {
   } catch(e) {}
 
   document.getElementById('scan-desc').textContent =
-    count > 0 ? `发现 ${count} 个 Shipment 存在 HAWB 失败，点击下方按钮开始批量 ReSync`
+    count > 0 ? `发现 ${count} 个 Shipment 存在 HAWB 失败`
                : '✓ 未发现 HAWB 失败记录，所有 Shipment 状态正常';
 
   _stats.found = count;
