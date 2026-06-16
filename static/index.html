@@ -617,7 +617,7 @@ async function doResyncOne(sn) {
     return;
   }
   const ship = _ships[sn];
-  if (ship) upsertRow({sn, failed: ship.failed, state: 'running', done: 0, total: 0});
+  if (ship) upsertRow({sn, failed: ship.failed, state: 'running', done: 0, total: ship.failed});
 }
 
 async function doStopOne(sn) {

@@ -471,14 +471,14 @@ def _resync_one_ship_standalone(s: dict, ship: dict):
     token = s["token"]
     stop_ev = threading.Event()
     s["ship_stops"][sn] = stop_ev
-    _push_ship(s, sn, ship["failed"], "running")
+    _push_ship(s, sn, ship["failed"], "running", 0, ship["failed"])
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = Path("logs") / f"results_{sn}_{ts}.csv"
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["timestamp", "shipment_number", "event_id",
                     "operate_action", "result", "message"])
-        ok, fail, errs = _resync_one_ship(s, token, sn, sid, w, stop_ev)
+        ok, fail, errs = _resync_one_ship(s, token, sn, sid, ship["failed"], w, stop_ev)
     cancelled = stop_ev.is_set()
     s["ship_stops"].pop(sn, None)
     if cancelled:
@@ -515,9 +515,9 @@ def _resync_worker(s: dict):
             sid = ship["sid"]
             stop_ev = threading.Event()
             s["ship_stops"][sn] = stop_ev
-            _push_ship(s, sn, ship["failed"], "running")
+            _push_ship(s, sn, ship["failed"], "running", 0, ship["failed"])
 
-            ok, fail, errs = _resync_one_ship(s, token, sn, sid, w, stop_ev)
+            ok, fail, errs = _resync_one_ship(s, token, sn, sid, ship["failed"], w, stop_ev)
             cancelled = stop_ev.is_set()
             s["ship_stops"].pop(sn, None)
 
@@ -537,7 +537,7 @@ def _resync_worker(s: dict):
     _bc(s, {"type": "done"})
 
 
-def _resync_one_ship(s: dict, token: str, sn: str, sid: str, w,
+def _resync_one_ship(s: dict, token: str, sn: str, sid: str, failed: int, w,
                      ship_stop: "threading.Event | None" = None) -> tuple:
     ok = fail = 0
     err_msgs: list = []
@@ -604,6 +604,10 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, w,
                         err_msgs.append(f"{action}: {msg}")
                 s["stats"]["done_ev"] += 1
                 _push_stat(s)
+        # broadcast per-ship progress after each batch
+        _bc(s, {"type": "ship", "sn": sn, "failed": failed,
+                "state": "running", "done": ok + fail,
+                "total": max(failed, ok + fail), "errors": []})
 
     return ok, fail, err_msgs
 
