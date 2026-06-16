@@ -566,6 +566,7 @@ async function doScan() {
   startSSE();
   const r = await post('/api/scan');
   if (!r.ok) {
+    stopSSE();
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
     alert(r.error || '扫描失败'); return;
   }
@@ -577,16 +578,19 @@ async function doScan() {
   document.getElementById('scan-prog-txt').textContent = '正在扫描…';
   document.getElementById('scan-prog-pct').textContent = '';
   _ships = {};
+  applyStatus('scanning');
 }
 
 async function doResync() {
   startSSE();
   const r = await post('/api/resync');
   if (!r.ok) {
+    stopSSE();
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
     alert(r.error || '操作失败'); return;
   }
   document.getElementById('prog-bar').classList.add('g-prog-pulse');
+  applyStatus('resyncing');
 }
 
 async function doResyncOne(sn) {
