@@ -644,6 +644,10 @@ async function doAddManual() {
     msg.style.color = 'var(--green)';
     msg.textContent = `✓ ${r.sn} 已添加，${r.failed} 条 ERROR`;
     inp.value = '';
+    // Directly update row & counter — don't rely on SSE timing
+    upsertRow({sn: r.sn, failed: r.failed, state: 'found', done: 0, total: 0});
+    _stats.found = Object.keys(_ships).length;
+    document.getElementById('n-found').textContent = _stats.found;
     document.getElementById('card-resync').style.display = '';
     document.getElementById('card-ships').style.display  = '';
   } else {
