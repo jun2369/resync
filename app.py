@@ -35,6 +35,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=os.environ.get("HTTPS") == "1",
+    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
 )
 
 # ── Per-session state store ───────────────────────────────────────────────────
@@ -62,17 +63,19 @@ def _sess() -> dict:
     if not sid:
         sid = str(uuid.uuid4())
         session["sid"] = sid
+    session.permanent = True
     with _store_lock:
         if sid not in _store:
+            # Restore token/username from signed cookie so server restarts don't log users out
             _store[sid] = {
-                "token":    None,
-                "username": "",
-                "status":   "idle",   # idle | scanning | scanned | resyncing | done | error
-                "ships":    [],        # [{sn, sid, failed, state, done, total}]
+                "token":    session.get("_tok"),
+                "username": session.get("_usr", ""),
+                "status":   "idle",
+                "ships":    [],
                 "stats":    _empty_stats(),
                 "q":        queue.Queue(maxsize=2000),
                 "stop":     threading.Event(),
-                "ship_stops": {},      # sn -> threading.Event for per-ship cancel
+                "ship_stops": {},
                 "seen":     datetime.now(),
             }
         else:
@@ -228,6 +231,8 @@ def api_login():
                         return jsonify({"ok": False, "error": perm_err}), 403
                     s["token"]    = tok
                     s["username"] = user
+                    session["_tok"] = tok
+                    session["_usr"] = user
                     _log(s, f"登录成功：{user}", "success")
                     return jsonify({"ok": True, "username": user})
         except Exception:
@@ -248,6 +253,8 @@ def api_set_token():
         return jsonify({"ok": False, "error": perm_err}), 403
     s["token"]    = tok
     s["username"] = "Token 用户"
+    session["_tok"] = tok
+    session["_usr"] = "Token 用户"
     _log(s, "Token 设置成功", "success")
     return jsonify({"ok": True, "username": "Token 用户"})
 
@@ -260,6 +267,8 @@ def api_logout():
     s["status"]   = "idle"
     s["ships"]    = []
     s["stats"]    = _empty_stats()
+    session.pop("_tok", None)
+    session.pop("_usr", None)
     return jsonify({"ok": True})
 
 
