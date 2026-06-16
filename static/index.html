@@ -107,8 +107,14 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     </div>
     <div class="mb-4">
       <label class="form-label text-muted" style="font-size:.82rem">密码</label>
-      <input class="g-input" id="inp-pw" type="password" placeholder="密码" autocomplete="current-password"
-             onkeydown="if(event.key==='Enter')doLogin()">
+      <div style="position:relative">
+        <input class="g-input" id="inp-pw" type="password" placeholder="密码" autocomplete="current-password"
+               onkeydown="if(event.key==='Enter')doLogin()" style="padding-right:42px">
+        <button type="button" onclick="togglePw()" tabindex="-1"
+          style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);padding:0;line-height:1">
+          <i class="bi bi-eye" id="pw-eye"></i>
+        </button>
+      </div>
     </div>
     <button class="g-btn g-btn-primary g-btn-lg w-100" id="btn-login" onclick="doLogin()">
       <i class="bi bi-box-arrow-in-right"></i>登录
@@ -499,6 +505,18 @@ function toggleTokenPane() {
   const open = p.style.display === 'none';
   p.style.display = open ? '' : 'none';
   c.className = open ? 'bi bi-chevron-up' : 'bi bi-chevron-down';
+}
+
+function togglePw() {
+  const inp = document.getElementById('inp-pw');
+  const eye = document.getElementById('pw-eye');
+  if (inp.type === 'password') {
+    inp.type = 'text';
+    eye.className = 'bi bi-eye-slash';
+  } else {
+    inp.type = 'password';
+    eye.className = 'bi bi-eye';
+  }
 }
 
 async function doLogin() {
