@@ -101,6 +101,27 @@ def _nimbus(token: str, path: str, payload: dict, timeout: int = 30) -> dict:
     r.raise_for_status()
     return r.json()
 
+def _check_permission(tok: str) -> str:
+    """Return an error message if the token lacks replay permission, else empty string."""
+    try:
+        resp = req.post(
+            f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+            json={"current": 1, "pageSize": 1},
+            timeout=10,
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "Content-Type":  "application/json",
+            },
+        )
+        if resp.status_code == 403:
+            return "该账号没有 Nimbus Admin 操作权限，请使用有管理员权限的账号登录（如 @speedx.io）"
+        if resp.status_code == 401:
+            return "Token 已过期或无效，请重新登录"
+    except Exception:
+        pass
+    return ""
+
+
 # ── Session event helpers ─────────────────────────────────────────────────────
 
 def _bc(s: dict, data: dict):
@@ -201,6 +222,10 @@ def api_login():
                 tok = ((d.get("data") or {}).get("token") or
                        d.get("token") or d.get("access_token"))
                 if tok:
+                    # Verify the account has replay permission
+                    perm_err = _check_permission(tok)
+                    if perm_err:
+                        return jsonify({"ok": False, "error": perm_err}), 403
                     s["token"]    = tok
                     s["username"] = user
                     _log(s, f"登录成功：{user}", "success")
@@ -218,6 +243,9 @@ def api_set_token():
     tok = ((request.json or {}).get("token") or "").strip()
     if not tok:
         return jsonify({"ok": False, "error": "Token 不能为空"}), 400
+    perm_err = _check_permission(tok)
+    if perm_err:
+        return jsonify({"ok": False, "error": perm_err}), 403
     s["token"]    = tok
     s["username"] = "Token 用户"
     _log(s, "Token 设置成功", "success")
