@@ -250,6 +250,7 @@ let _username  = "";
 let _ships     = {};   // sn -> {failed, state, done, total}
 let _stats     = {found:0, ok:0, fail:0, total_ev:0, done_ev:0};
 let _status    = "idle";
+let _es        = null;
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -294,9 +295,13 @@ function showApp() {
 }
 
 // ── SSE ───────────────────────────────────────────────────────────────────────
+function stopSSE() {
+  if (_es) { _es.close(); _es = null; }
+}
 function startSSE() {
-  const es = new EventSource('/api/stream');
-  es.onmessage = e => {
+  stopSSE();
+  _es = new EventSource('/api/stream');
+  _es.onmessage = e => {
     const ev = JSON.parse(e.data);
     if (ev.type === 'ping')          return;
     if (ev.type === 'status')        applyStatus(ev.value);
@@ -306,7 +311,7 @@ function startSSE() {
     if (ev.type === 'scan_done')     onScanDone(ev.count);
     if (ev.type === 'done')          onDone();
   };
-  es.onerror = () => setTimeout(startSSE, 3000);
+  _es.onerror = () => { if (_es) setTimeout(startSSE, 3000); };
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────
@@ -461,12 +466,14 @@ function onScanDone(count) {
     document.getElementById('card-ships').style.display  = '';
   }
   applyStatus('scanned');
+  setTimeout(stopSSE, 800);
 }
 
 function onDone() {
   applyStatus('done');
   document.getElementById('prog-bar').style.width = '100%';
   document.getElementById('prog-bar').classList.remove('g-prog-pulse');
+  setTimeout(stopSSE, 800);
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -556,6 +563,7 @@ async function doLogout() {
 
 // ── Main actions ──────────────────────────────────────────────────────────────
 async function doScan() {
+  startSSE();
   const r = await post('/api/scan');
   if (!r.ok) {
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
@@ -572,6 +580,7 @@ async function doScan() {
 }
 
 async function doResync() {
+  startSSE();
   const r = await post('/api/resync');
   if (!r.ok) {
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
@@ -581,6 +590,7 @@ async function doResync() {
 }
 
 async function doResyncOne(sn) {
+  startSSE();
   const r = await post('/api/resync_one', {sn});
   if (!r.ok) {
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
