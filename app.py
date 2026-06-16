@@ -458,13 +458,46 @@ def _get_error_count(token: str, sid: str) -> int:
     return 0
 
 
+def _find_error_raw(ev: dict) -> str:
+    """Extract error message text from a parcelTrack event using multiple strategies."""
+    # 1. Try common explicit field names
+    for field in ("errorMessage", "syncErrorMessage", "errorMsg", "syncError",
+                  "errorContent", "errorDetail", "failureMessage", "failReason",
+                  "errorInfo", "errorDesc", "remark", "message", "description"):
+        v = ev.get(field)
+        if isinstance(v, str) and len(v) > 8:
+            return v
+    # 2. Check one level of nested dicts
+    for v in ev.values():
+        if isinstance(v, dict):
+            for field in ("errorMessage", "errorMsg", "msg", "message", "error"):
+                vv = v.get(field)
+                if isinstance(vv, str) and len(vv) > 8:
+                    return vv
+    # 3. Heuristic: any string field that looks like an error
+    for k, v in ev.items():
+        if not isinstance(v, str) or len(v) < 20:
+            continue
+        vl = v.lower()
+        if any(kw in vl for kw in ("[500]", "[400]", "[post]", "[get]",
+                                    "exception", "internal server", "timeout",
+                                    "connection refused", "no such")):
+            return v
+    return ""
+
+
 def _extract_error_key(raw: str) -> str:
-    """Pull the short error description out of a Nimbus error message string."""
+    """Shorten an error message to its key description."""
     if not raw:
         return ""
+    # Extract "msg" value from trailing JSON: {"msg":"Internal Server Error",...}
     m = re.search(r'"msg"\s*:\s*"([^"]{2,120})"', raw)
     if m and m.group(1).lower() not in ("null", "none", ""):
         return m.group(1)
+    # Extract HTTP status + path: [500] during [POST] to [http://.../updateFoo]
+    m2 = re.search(r'\[(\d{3})\].*?/(\w+)\]', raw)
+    if m2:
+        return f"HTTP {m2.group(1)} — {m2.group(2)}"
     return raw.strip()[:100]
 
 
@@ -481,7 +514,8 @@ def api_ship_reasons():
 
     token  = s["token"]
     sid    = ship["sid"]
-    groups: dict = {}   # action -> {count, msgs}
+    # action -> {count, err_counts: {short_msg: count}}
+    groups: dict = {}
 
     for page in range(1, 3):   # sample up to 200 events
         try:
@@ -495,22 +529,23 @@ def api_ship_reasons():
             if not events:
                 break
             for ev in events:
-                action  = (ev.get("operateAction") or "unknown").strip()
-                raw_err = (ev.get("errorMessage") or ev.get("syncError") or
-                           ev.get("errorMsg")     or ev.get("message")   or "")
+                action    = (ev.get("operateAction") or "unknown").strip()
+                raw_err   = _find_error_raw(ev)
+                short_err = _extract_error_key(raw_err)
                 if action not in groups:
-                    groups[action] = {"count": 0, "msgs": []}
+                    groups[action] = {"count": 0, "err_counts": {}}
                 groups[action]["count"] += 1
-                if raw_err and len(groups[action]["msgs"]) < 3:
-                    groups[action]["msgs"].append(raw_err)
+                if short_err:
+                    ec = groups[action]["err_counts"]
+                    ec[short_err] = ec.get(short_err, 0) + 1
         except Exception:
             break
 
     summary = []
     for action, info in sorted(groups.items(), key=lambda x: -x[1]["count"])[:3]:
-        sample = info["msgs"][0] if info["msgs"] else ""
-        summary.append({"action": action, "count": info["count"],
-                         "msg": _extract_error_key(sample)})
+        err_counts = info["err_counts"]
+        top_err = max(err_counts, key=err_counts.get) if err_counts else ""
+        summary.append({"action": action, "count": info["count"], "msg": top_err})
 
     return jsonify({"ok": True, "summary": summary})
 
