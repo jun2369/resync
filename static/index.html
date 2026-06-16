@@ -460,13 +460,28 @@ function onScanProgress(ev) {
   document.getElementById('scan-prog-pct').textContent = pct + '%';
 }
 
-function onScanDone(count) {
+async function onScanDone(count) {
+  // Re-sync ship list from backend to fix any SSE-dropped events
+  try {
+    const me = await fetch('/api/me').then(r => r.json());
+    if (me && Array.isArray(me.ships)) {
+      for (const sh of me.ships) {
+        if (!_ships[sh.sn]) {
+          _ships[sh.sn] = sh;
+          upsertRow({sn: sh.sn, failed: sh.failed, state: sh.state || 'found',
+                     done: sh.done || 0, total: sh.total || 0, manual: sh.manual});
+        }
+      }
+      count = me.ships.length;
+    }
+  } catch(e) {}
+
   document.getElementById('scan-desc').textContent =
     count > 0 ? `发现 ${count} 个 Shipment 存在 HAWB 失败，点击下方按钮开始批量 ReSync`
                : '✓ 未发现 HAWB 失败记录，所有 Shipment 状态正常';
 
   _stats.found = count;
-  document.getElementById('n-found').textContent = count;
+  document.getElementById('n-found').textContent = count || '—';
 
   if (count > 0) {
     document.getElementById('card-resync').style.display = '';
