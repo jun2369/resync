@@ -458,44 +458,86 @@ def _get_error_count(token: str, sid: str) -> int:
     return 0
 
 
+def _parse_nested(val):
+    """Return val as dict if it's already a dict or a JSON string."""
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str) and val.strip().startswith("{"):
+        try:
+            return json.loads(val)
+        except Exception:
+            pass
+    return None
+
+
 def _find_error_raw(ev: dict) -> str:
-    """Extract error message text from a parcelTrack event using multiple strategies."""
-    # 1. Try common explicit field names
+    """Extract error message text from a parcelTrack event."""
+    # 1. Explicit top-level field names
     for field in ("errorMessage", "syncErrorMessage", "errorMsg", "syncError",
                   "errorContent", "errorDetail", "failureMessage", "failReason",
-                  "errorInfo", "errorDesc", "remark", "message", "description"):
+                  "errorInfo", "errorDesc", "message", "description"):
         v = ev.get(field)
         if isinstance(v, str) and len(v) > 8:
             return v
-    # 2. Check one level of nested dicts
-    for v in ev.values():
-        if isinstance(v, dict):
-            for field in ("errorMessage", "errorMsg", "msg", "message", "error"):
-                vv = v.get(field)
+    # 2. Inside sourceTenantData / targetTenantData (JSON string or dict)
+    for key in ("sourceTenantData", "targetTenantData", "targetTenantReq"):
+        obj = _parse_nested(ev.get(key))
+        if obj:
+            for field in ("errorMessage", "errorMsg", "msg", "message",
+                          "error", "remark", "failReason"):
+                vv = obj.get(field)
                 if isinstance(vv, str) and len(vv) > 8:
                     return vv
-    # 3. Heuristic: any string field that looks like an error
-    for k, v in ev.items():
+    # 3. Any top-level string that looks like an HTTP error
+    for v in ev.values():
         if not isinstance(v, str) or len(v) < 20:
             continue
         vl = v.lower()
         if any(kw in vl for kw in ("[500]", "[400]", "[post]", "[get]",
                                     "exception", "internal server", "timeout",
-                                    "connection refused", "no such")):
+                                    "connection refused")):
             return v
     return ""
 
 
+def _extract_context(ev: dict) -> str:
+    """Pull operation context (entry number, house, etc.) from event fields."""
+    # targetTenantReq at top level or inside sourceTenantData
+    for key in ("targetTenantReq",):
+        obj = _parse_nested(ev.get(key))
+        if obj:
+            en = obj.get("entryNumber") or obj.get("entry_number")
+            if en:
+                return f"Entry# {en}"
+            hn = obj.get("houseNumber") or obj.get("houseExtId")
+            if hn:
+                return f"House {str(hn)[:16]}"
+
+    # customsChangeDetail inside sourceTenantData
+    std = _parse_nested(ev.get("sourceTenantData"))
+    if std:
+        ccd = _parse_nested(std.get("customsChangeDetail")) or std.get("customsChangeDetail")
+        if isinstance(ccd, dict):
+            en = ccd.get("entryNumber") or ccd.get("entry_number")
+            if en:
+                return f"Entry# {en}"
+        # targetTenantReq inside sourceTenantData
+        req = _parse_nested(std.get("targetTenantReq"))
+        if isinstance(req, dict):
+            en = req.get("entryNumber")
+            if en:
+                return f"Entry# {en}"
+    return ""
+
+
 def _extract_error_key(raw: str) -> str:
-    """Shorten an error message to its key description."""
+    """Shorten a raw error string to its key description."""
     if not raw:
         return ""
-    # Extract "msg" value from trailing JSON: {"msg":"Internal Server Error",...}
     m = re.search(r'"msg"\s*:\s*"([^"]{2,120})"', raw)
     if m and m.group(1).lower() not in ("null", "none", ""):
         return m.group(1)
-    # Extract HTTP status + path: [500] during [POST] to [http://.../updateFoo]
-    m2 = re.search(r'\[(\d{3})\].*?/(\w+)\]', raw)
+    m2 = re.search(r'\[(\d{3})\].*?/(\w{4,})\]', raw)
     if m2:
         return f"HTTP {m2.group(1)} — {m2.group(2)}"
     return raw.strip()[:100]
@@ -514,8 +556,9 @@ def api_ship_reasons():
 
     token  = s["token"]
     sid    = ship["sid"]
-    # action -> {count, err_counts: {short_msg: count}}
+    # action -> {count, err_counts, ctx_counts}
     groups: dict = {}
+    _debug_logged = False
 
     for page in range(1, 3):   # sample up to 200 events
         try:
@@ -528,24 +571,47 @@ def api_ship_reasons():
             events = resp.get("data") or []
             if not events:
                 break
+            # Log first event's keys once so we can identify error field names
+            if not _debug_logged and events:
+                first = events[0]
+                print(f"[DEBUG ship_reasons] keys={list(first.keys())}", flush=True)
+                for k, v in first.items():
+                    if v is not None and v != "" and v != []:
+                        print(f"  {k}: {str(v)[:120]}", flush=True)
+                _debug_logged = True
             for ev in events:
                 action    = (ev.get("operateAction") or "unknown").strip()
                 raw_err   = _find_error_raw(ev)
                 short_err = _extract_error_key(raw_err)
+                ctx       = _extract_context(ev)
                 if action not in groups:
-                    groups[action] = {"count": 0, "err_counts": {}}
+                    groups[action] = {"count": 0, "err_counts": {}, "ctx_counts": {}}
                 groups[action]["count"] += 1
                 if short_err:
                     ec = groups[action]["err_counts"]
                     ec[short_err] = ec.get(short_err, 0) + 1
+                if ctx:
+                    cc = groups[action]["ctx_counts"]
+                    cc[ctx] = cc.get(ctx, 0) + 1
         except Exception:
             break
 
     summary = []
     for action, info in sorted(groups.items(), key=lambda x: -x[1]["count"])[:3]:
         err_counts = info["err_counts"]
+        ctx_counts = info["ctx_counts"]
         top_err = max(err_counts, key=err_counts.get) if err_counts else ""
-        summary.append({"action": action, "count": info["count"], "msg": top_err})
+        top_ctx = max(ctx_counts, key=ctx_counts.get) if ctx_counts else ""
+        # Combine: "Entry# N123 — Internal Server Error" or fallback
+        if top_err and top_ctx:
+            msg = f"{top_ctx} — {top_err}"
+        elif top_err:
+            msg = top_err
+        elif top_ctx:
+            msg = top_ctx
+        else:
+            msg = ""
+        summary.append({"action": action, "count": info["count"], "msg": msg})
 
     return jsonify({"ok": True, "summary": summary})
 
