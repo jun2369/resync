@@ -95,7 +95,6 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     <div class="text-center mb-4">
       <i class="bi bi-arrow-repeat" style="font-size:2rem;color:var(--accent)"></i>
       <h1 style="font-size:1.4rem;font-weight:700;margin:.5rem 0 .25rem">Nimbus Auto ReSync</h1>
-      <p style="color:var(--muted);font-size:.88rem;margin:0"></p>
     </div>
 
     <!-- Login form -->
@@ -103,7 +102,8 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
 
     <div class="mb-3">
       <label class="form-label text-muted" style="font-size:.82rem">账号</label>
-      <input class="g-input" id="inp-user" type="email" placeholder="邮箱账号" autocomplete="username">
+      <input class="g-input" id="inp-user" type="email" placeholder="邮箱账号" autocomplete="username"
+             onkeydown="if(event.key==='Enter')doLogin()">
     </div>
     <div class="mb-4">
       <label class="form-label text-muted" style="font-size:.82rem">密码</label>
