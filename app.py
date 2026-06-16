@@ -73,7 +73,7 @@ def _sess() -> dict:
                 "status":   "idle",
                 "ships":    [],
                 "stats":    _empty_stats(),
-                "q":        queue.Queue(maxsize=2000),
+                "q":        queue.Queue(maxsize=8000),
                 "stop":     threading.Event(),
                 "ship_stops": {},
                 "seen":     datetime.now(),
@@ -158,7 +158,11 @@ def _push_ship(s: dict, sn: str, failed, state: str, done: int = 0, total: int =
              "errors": errors or []})
 
 
-def _push_stat(s: dict):
+def _push_stat(s: dict, force: bool = False):
+    now = time.time()
+    if not force and now - s.get("_last_stat_t", 0) < 0.4:
+        return
+    s["_last_stat_t"] = now
     _bc(s, {"type": "stat", **s["stats"]})
 
 # ── Flask routes ──────────────────────────────────────────────────────────────
@@ -527,10 +531,10 @@ def _resync_one_ship_standalone(s: dict, ship: dict):
     else:
         state = "partial" if ok > 0 else "error"
         _log(s, f"{sn} 完成  成功: {ok}  失败: {fail}", "warning")
-    _push_ship(s, sn, ship["failed"], state, ok, ok + fail, errs)
     s["stats"]["ok"]   += ok
     s["stats"]["fail"] += fail
-    _push_stat(s)
+    _push_ship(s, sn, ship["failed"], state, ok, ok + fail, errs)
+    _push_stat(s, force=True)
 
 
 def _resync_worker(s: dict):
@@ -561,10 +565,10 @@ def _resync_worker(s: dict):
             state = ("cancelled" if cancelled
                      else "done" if fail == 0
                      else "partial" if ok > 0 else "error")
-            _push_ship(s, sn, ship["failed"], state, ok, ok + fail, errs)
             s["stats"]["ok"]   += ok
             s["stats"]["fail"] += fail
-            _push_stat(s)
+            _push_ship(s, sn, ship["failed"], state, ok, ok + fail, errs)
+            _push_stat(s, force=True)
 
     _log(s,
          f"全部完成 ✓  ReSync 成功: {s['stats']['ok']}  失败: {s['stats']['fail']}  "

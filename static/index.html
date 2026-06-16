@@ -175,16 +175,17 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
 
   <!-- Manual shipment number input -->
   <div class="g-card p-3 mb-3" id="card-manual">
-    <div class="d-flex align-items-center gap-2 flex-wrap">
-      <span style="font-size:.85rem;color:var(--muted);white-space:nowrap">手动添加单号</span>
-      <input class="g-input" id="inp-manual-sn" placeholder="输入 Shipment Number"
-        style="flex:1;min-width:180px;max-width:320px;padding:7px 12px;font-size:.88rem"
-        onkeydown="if(event.key==='Enter')doAddManual()">
+    <div class="d-flex align-items-start gap-2 flex-wrap">
+      <span style="font-size:.85rem;color:var(--muted);white-space:nowrap;padding-top:6px">手动添加单号</span>
+      <textarea class="g-input" id="inp-manual-sn"
+        placeholder="输入 Shipment Number，支持多个（每行一个或逗号分隔）"
+        style="flex:1;min-width:200px;max-width:400px;padding:7px 12px;font-size:.88rem;resize:vertical;min-height:38px;max-height:130px;line-height:1.5"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();doAddManual()}"></textarea>
       <button class="g-btn g-btn-ghost" id="btn-manual" onclick="doAddManual()" style="padding:7px 18px">
         <i class="bi bi-plus-circle"></i>添加
       </button>
-      <span id="manual-msg" style="font-size:.82rem;display:none"></span>
     </div>
+    <div id="manual-msg" style="font-size:.82rem;margin-top:6px;display:none;padding-left:2px"></div>
   </div>
 
   <!-- Step 2: ReSync (shown after scan finds results) -->
@@ -628,32 +629,52 @@ async function doAddManual() {
   const inp = document.getElementById('inp-manual-sn');
   const msg = document.getElementById('manual-msg');
   const btn = document.getElementById('btn-manual');
-  const sn = inp.value.trim();
-  if (!sn) return;
+
+  const raw = inp.value.trim();
+  if (!raw) return;
+  const sns = [...new Set(raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean))];
+  if (!sns.length) return;
 
   btn.disabled = true;
   msg.style.display = '';
   msg.style.color = 'var(--muted)';
-  msg.textContent = '查询中…';
+  msg.textContent = sns.length > 1 ? `正在查询 0 / ${sns.length}…` : '查询中…';
 
   startSSE();
-  const r = await post('/api/add_manual', {sn});
+
+  const results = {ok: [], fail: []};
+  for (let i = 0; i < sns.length; i++) {
+    const sn = sns[i];
+    if (sns.length > 1) {
+      msg.style.color = 'var(--muted)';
+      msg.textContent = `正在查询 ${i + 1} / ${sns.length}：${sn}`;
+    }
+    const r = await post('/api/add_manual', {sn});
+    if (r.ok) {
+      results.ok.push(`${r.sn}(${r.failed}条)`);
+      upsertRow({sn: r.sn, failed: r.failed, state: 'found', done: 0, total: 0});
+      _stats.found = Object.keys(_ships).length;
+      document.getElementById('n-found').textContent = _stats.found;
+      document.getElementById('card-resync').style.display = '';
+      document.getElementById('card-ships').style.display  = '';
+    } else {
+      results.fail.push(`${sn}: ${r.error || '失败'}`);
+    }
+  }
 
   btn.disabled = false;
-  if (r.ok) {
+  inp.value = '';
+
+  if (results.ok.length && !results.fail.length) {
     msg.style.color = 'var(--green)';
-    msg.textContent = `✓ ${r.sn} 已添加，${r.failed} 条 ERROR`;
-    inp.value = '';
-    // Directly update row & counter — don't rely on SSE timing
-    upsertRow({sn: r.sn, failed: r.failed, state: 'found', done: 0, total: 0});
-    _stats.found = Object.keys(_ships).length;
-    document.getElementById('n-found').textContent = _stats.found;
-    document.getElementById('card-resync').style.display = '';
-    document.getElementById('card-ships').style.display  = '';
+    msg.textContent = `✓ 已添加 ${results.ok.join('、')}`;
+  } else if (results.ok.length && results.fail.length) {
+    msg.style.color = 'var(--yellow)';
+    msg.textContent = `✓ ${results.ok.join('、')}；✗ ${results.fail.join('；')}`;
   } else {
     stopSSE();
     msg.style.color = 'var(--red)';
-    msg.textContent = r.error || '添加失败';
+    msg.textContent = results.fail.join('；');
   }
 }
 
