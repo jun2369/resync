@@ -229,6 +229,7 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
           <tr style="background:#1c2128">
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Shipment Number</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">HAWB Failed</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">原因</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">状态</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">进度</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">操作</th>
@@ -255,6 +256,7 @@ let _ships     = {};   // sn -> {failed, state, done, total}
 let _stats     = {found:0, ok:0, fail:0, total_ev:0, done_ev:0};
 let _status    = "idle";
 let _es        = null;
+const _reasons = {};   // sn -> 'loading' | summary[] | null
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -369,6 +371,45 @@ function applyStats(s) {
   }
 }
 
+// ── Error reasons ─────────────────────────────────────────────────────────────
+function _reasonsHtml(sn) {
+  const r = _reasons[sn];
+  if (r === 'loading')
+    return '<span style="color:var(--muted);font-size:.75rem">分析中…</span>';
+  if (!r || r.length === 0)
+    return '<span style="color:var(--muted)">—</span>';
+  return r.map(g => {
+    const msgEl = g.msg
+      ? `<div style="font-size:.7rem;color:#f85149;font-family:monospace;max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px" title="${g.msg.replace(/"/g,'&quot;')}">${g.msg}</div>`
+      : '';
+    return `<div style="margin-bottom:5px">
+      <span style="font-size:.74rem;color:var(--muted)">${g.action}</span>
+      <span style="font-size:.74rem;color:var(--yellow);margin-left:4px">×${g.count}</span>
+      ${msgEl}
+    </div>`;
+  }).join('');
+}
+
+function _updateReasonsCell(sn) {
+  const row = document.getElementById('row-' + sn);
+  if (!row) return;
+  const cell = row.querySelector('.reasons-cell');
+  if (cell) cell.innerHTML = _reasonsHtml(sn);
+}
+
+async function fetchReasons(sn) {
+  if (_reasons[sn] && _reasons[sn] !== 'loading') return;
+  _reasons[sn] = 'loading';
+  _updateReasonsCell(sn);
+  try {
+    const r = await post('/api/ship_reasons', {sn});
+    _reasons[sn] = (r.ok && r.summary && r.summary.length) ? r.summary : null;
+  } catch(e) {
+    _reasons[sn] = null;
+  }
+  _updateReasonsCell(sn);
+}
+
 // ── Shipment rows ─────────────────────────────────────────────────────────────
 const STATE_INFO = {
   found:     { badge:'g-badge-yellow', label:'待处理' },
@@ -407,7 +448,7 @@ function upsertRow(ev) {
 
   const errHtml = (ev.errors && ev.errors.length > 0 && (ev.state === 'error' || ev.state === 'partial'))
     ? `<tr id="err-${ev.sn}" class="ship-row">
-         <td colspan="5" style="padding:4px 14px 10px 28px">
+         <td colspan="6" style="padding:4px 14px 10px 28px">
            ${ev.errors.map(e => `<div style="font-size:.76rem;color:var(--red);font-family:monospace">⚠ ${e}</div>`).join('')}
          </td>
        </tr>`
@@ -423,6 +464,7 @@ function upsertRow(ev) {
       </button>
     </td>
     <td style="text-align:center"><span class="g-badge g-badge-red">${ev.failed}</span></td>
+    <td class="reasons-cell" style="padding:6px 14px;min-width:170px;max-width:240px;vertical-align:top">${_reasonsHtml(ev.sn)}</td>
     <td style="text-align:center"><span class="g-badge ${si.badge}">${si.label}</span></td>
     <td style="text-align:center">${progHtml}</td>
     <td style="text-align:center">${btnHtml}</td>`;
@@ -473,6 +515,8 @@ async function onScanDone(count) {
         }
       }
       count = me.ships.length;
+      // Fetch error reasons for all found ships
+      for (const sh of me.ships) fetchReasons(sh.sn);
     }
   } catch(e) {}
 
@@ -584,6 +628,7 @@ async function doLogout() {
   _username = '';
   _ships    = {};
   _stats    = {found:0,ok:0,fail:0,total_ev:0,done_ev:0};
+  for (const k in _reasons) delete _reasons[k];
   document.getElementById('ship-body').innerHTML = '';
   document.getElementById('card-resync').style.display = 'none';
   document.getElementById('card-ships').style.display  = 'none';
@@ -608,6 +653,7 @@ async function doScan() {
   for (const sn in _ships) {
     if (!_ships[sn].manual) {
       delete _ships[sn];
+      delete _reasons[sn];
       const row = document.getElementById('row-' + sn);
       if (row) row.remove();
     }
@@ -681,6 +727,7 @@ async function doAddManual() {
     if (r.ok) {
       results.ok.push(`${r.sn}(${r.failed}条)`);
       upsertRow({sn: r.sn, failed: r.failed, state: 'found', done: 0, total: 0, manual: true});
+      fetchReasons(r.sn);
       _stats.found = Object.keys(_ships).length;
       document.getElementById('n-found').textContent = _stats.found;
       document.getElementById('card-resync').style.display = '';

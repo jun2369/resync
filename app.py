@@ -10,6 +10,7 @@ Environment variables:
 import csv
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
 import threading
@@ -455,6 +456,63 @@ def _get_error_count(token: str, sid: str) -> int:
     except Exception:
         pass
     return 0
+
+
+def _extract_error_key(raw: str) -> str:
+    """Pull the short error description out of a Nimbus error message string."""
+    if not raw:
+        return ""
+    m = re.search(r'"msg"\s*:\s*"([^"]{2,120})"', raw)
+    if m and m.group(1).lower() not in ("null", "none", ""):
+        return m.group(1)
+    return raw.strip()[:100]
+
+
+@app.route("/api/ship_reasons", methods=["POST"])
+def api_ship_reasons():
+    s = _sess()
+    if not s.get("token"):
+        return jsonify({"ok": False, "error": "未登录"}), 401
+    data = request.get_json() or {}
+    sn   = (data.get("sn") or "").strip()
+    ship = next((sh for sh in s["ships"] if sh["sn"] == sn), None)
+    if not ship:
+        return jsonify({"ok": False, "error": "找不到"}), 404
+
+    token  = s["token"]
+    sid    = ship["sid"]
+    groups: dict = {}   # action -> {count, msgs}
+
+    for page in range(1, 3):   # sample up to 200 events
+        try:
+            resp = _nimbus(token,
+                           "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                           {"shipmentId": sid, "operationResult": "ERROR",
+                            "current": page, "pageSize": 100})
+            if not resp.get("success"):
+                break
+            events = resp.get("data") or []
+            if not events:
+                break
+            for ev in events:
+                action  = (ev.get("operateAction") or "unknown").strip()
+                raw_err = (ev.get("errorMessage") or ev.get("syncError") or
+                           ev.get("errorMsg")     or ev.get("message")   or "")
+                if action not in groups:
+                    groups[action] = {"count": 0, "msgs": []}
+                groups[action]["count"] += 1
+                if raw_err and len(groups[action]["msgs"]) < 3:
+                    groups[action]["msgs"].append(raw_err)
+        except Exception:
+            break
+
+    summary = []
+    for action, info in sorted(groups.items(), key=lambda x: -x[1]["count"])[:3]:
+        sample = info["msgs"][0] if info["msgs"] else ""
+        summary.append({"action": action, "count": info["count"],
+                         "msg": _extract_error_key(sample)})
+
+    return jsonify({"ok": True, "summary": summary})
 
 
 def _scan_worker(s: dict):
