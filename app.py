@@ -614,14 +614,29 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, failed: int, w,
     def _stopped():
         return s["stop"].is_set() or (ship_stop is not None and ship_stop.is_set())
 
+    PAGE_SIZE = 100
+
     while not _stopped():
         try:
-            # Always fetch page 1 — replayed events leave the ERROR list,
-            # so incrementing the page cursor would skip items.
+            # Probe total to find the last page, then fetch from the last page.
+            # This replays events in reverse order (last item first), matching
+            # the manual click behaviour the user requested.
+            probe = _nimbus(token,
+                            "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                            {"shipmentId": sid, "operationResult": "ERROR",
+                             "current": 1, "pageSize": 1})
+            if not probe.get("success"):
+                _log(s, f"{sn} 错误: {probe.get('msg')}", "error")
+                break
+            total = probe.get("total") or 0
+            if total == 0:
+                break
+            last_page = (total + PAGE_SIZE - 1) // PAGE_SIZE  # ceiling division
+
             resp = _nimbus(token,
                            "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
                            {"shipmentId": sid, "operationResult": "ERROR",
-                            "current": 1, "pageSize": 100})
+                            "current": last_page, "pageSize": PAGE_SIZE})
         except Exception as exc:
             _log(s, f"{sn} 获取事件失败: {exc}", "error")
             break
@@ -631,9 +646,8 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, failed: int, w,
             break
 
         if not total_logged:
-            tc = resp.get("total") or 0
-            _log(s, f"  {sn}: {tc} 条失败事件")
-            s["stats"]["total_ev"] += tc
+            _log(s, f"  {sn}: {total} 条失败事件")
+            s["stats"]["total_ev"] += total
             _push_stat(s)
             total_logged = True
 
