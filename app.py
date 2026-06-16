@@ -77,6 +77,7 @@ def _sess() -> dict:
                 "stop":     threading.Event(),
                 "ship_stops": {},
                 "seen":     datetime.now(),
+                "_perm_ok": False,  # needs re-check after cookie restore
             }
         else:
             _store[sid]["seen"] = datetime.now()
@@ -106,20 +107,23 @@ def _nimbus(token: str, path: str, payload: dict, timeout: int = 30) -> dict:
 
 def _check_permission(tok: str) -> str:
     """Return an error message if the token lacks replay permission, else empty string."""
+    hdrs = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+    # Check token validity via read endpoint
     try:
-        resp = req.post(
-            f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
-            json={"current": 1, "pageSize": 1},
-            timeout=10,
-            headers={
-                "Authorization": f"Bearer {tok}",
-                "Content-Type":  "application/json",
-            },
-        )
-        if resp.status_code == 403:
-            return "该账号没有 Nimbus Admin 操作权限，请使用有管理员权限的账号登录（如 @speedx.io）"
-        if resp.status_code == 401:
+        r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                     json={"current": 1, "pageSize": 1}, timeout=10, headers=hdrs)
+        if r.status_code == 401:
             return "Token 已过期或无效，请重新登录"
+        if r.status_code == 403:
+            return "该账号没有 Nimbus Admin 操作权限，请使用有管理员权限的账号登录（如 @speedx.io）"
+    except Exception:
+        pass
+    # Check replay (write) permission with a non-existent ID — 403 means no write access
+    try:
+        r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/replay",
+                     json={"id": 0}, timeout=10, headers=hdrs)
+        if r.status_code == 403:
+            return "该账号没有 ReSync 操作权限，请使用有管理员权限的账号登录（如 @speedx.io）"
     except Exception:
         pass
     return ""
@@ -194,6 +198,15 @@ def api_stream():
 @app.route("/api/me")
 def api_me():
     s = _sess()
+    # Re-validate permission once after cookie restore (runs only on first /api/me per session)
+    if s.get("token") and not s.get("_perm_ok"):
+        err = _check_permission(s["token"])
+        if err:
+            s["token"] = None
+            s["username"] = ""
+            session.pop("_tok", None)
+            session.pop("_usr", None)
+        s["_perm_ok"] = True
     return jsonify({
         "logged_in": bool(s["token"]),
         "username":  s["username"],
@@ -235,6 +248,7 @@ def api_login():
                         return jsonify({"ok": False, "error": perm_err}), 403
                     s["token"]    = tok
                     s["username"] = user
+                    s["_perm_ok"] = True
                     session["_tok"] = tok
                     session["_usr"] = user
                     _log(s, f"登录成功：{user}", "success")
@@ -257,6 +271,7 @@ def api_set_token():
         return jsonify({"ok": False, "error": perm_err}), 403
     s["token"]    = tok
     s["username"] = "Token 用户"
+    s["_perm_ok"] = True
     session["_tok"] = tok
     session["_usr"] = "Token 用户"
     _log(s, "Token 设置成功", "success")
