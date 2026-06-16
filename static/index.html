@@ -212,9 +212,6 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
 
     <!-- Action buttons -->
     <div class="d-flex gap-2 flex-wrap" id="action-btns">
-      <button class="g-btn g-btn-success g-btn-lg" id="btn-resync" onclick="doResync()">
-        <i class="bi bi-play-fill"></i>开始全部 ReSync
-      </button>
       <button class="g-btn g-btn-danger g-btn-lg" id="btn-stop" onclick="doStop()" style="display:none">
         <i class="bi bi-stop-fill"></i>停止
       </button>
@@ -342,16 +339,12 @@ function applyStatus(v) {
   document.getElementById('btn-scan').disabled  = busy;
   document.getElementById('scan-prog').style.display = v==='scanning' ? '' : 'none';
   // resync buttons
-  const btnR = document.getElementById('btn-resync');
   const btnS = document.getElementById('btn-stop');
   if (v==='resyncing') {
-    btnR.style.display = 'none';
     btnS.style.display = '';
     document.getElementById('btn-scan').disabled = true;
   } else {
-    btnR.style.display = '';
     btnS.style.display = 'none';
-    btnR.disabled = (v==='scanning');
   }
   if (v==='done') {
     document.getElementById('prog-label').textContent = '全部处理完成 ✓';
