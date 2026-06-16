@@ -386,19 +386,34 @@ def api_add_manual():
 
 # ── Background: scan ──────────────────────────────────────────────────────────
 
+def _get_error_count(token: str, sid: str) -> int:
+    """Return the number of current ERROR events for a shipment."""
+    try:
+        resp = _nimbus(token,
+                       "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                       {"shipmentId": sid, "operationResult": "ERROR",
+                        "current": 1, "pageSize": 1})
+        if resp.get("success"):
+            return resp.get("total") or 0
+    except Exception:
+        pass
+    return 0
+
+
 def _scan_worker(s: dict):
     s["stop"].clear()
     token = s["token"]
-    found_map = {}   # sid -> ship dict
+    found = []
 
     try:
         page = 1
         total_pages = 9999
 
+        # Step 1: globalSearch to discover shipments quickly
         while page <= total_pages and not s["stop"].is_set():
             resp = _nimbus(token,
-                           "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
-                           {"operationResult": "ERROR", "current": page, "pageSize": 100})
+                           "/api/admin/operate/tenant-sync/shipment-event/globalSearch",
+                           {"current": page, "pageSize": 50})
 
             if not resp.get("success"):
                 _log(s, f"API 错误: {resp.get('msg')}", "error")
@@ -406,28 +421,31 @@ def _scan_worker(s: dict):
 
             total_pages = resp.get("totalPages") or 1
             if page == 1:
-                _log(s, f"共 {resp.get('total')} 个失败事件，{total_pages} 页，正在扫描…")
+                _log(s, f"共 {resp.get('total')} 个 Shipment，{total_pages} 页，正在扫描…")
 
+            candidates = []
             for item in (resp.get("data") or []):
+                fc  = (item.get("hawbMilestoneStatistics") or {}).get("failedCnt") or 0
                 sid = str(item.get("shipmentId") or "").strip()
                 sn  = (item.get("shipmentNumber") or "").strip()
-                if not sid:
-                    continue
-                if sid in found_map:
-                    found_map[sid]["failed"] += 1
-                else:
-                    found_map[sid] = {"sn": sn or sid, "sid": sid, "failed": 1,
-                                      "state": "found", "done": 0, "total": 0}
+                if fc > 0 and sid:
+                    candidates.append({"sn": sn, "sid": sid})
+
+            # Step 2: verify each candidate with real-time parcelTrack-event count
+            for c in candidates:
+                if s["stop"].is_set():
+                    break
+                real_fc = _get_error_count(token, c["sid"])
+                if real_fc > 0:
+                    ship = {"sn": c["sn"], "sid": c["sid"], "failed": real_fc,
+                            "state": "found", "done": 0, "total": 0}
+                    found.append(ship)
+                    _bc(s, {"type": "ship", "sn": c["sn"], "failed": real_fc,
+                             "state": "found", "done": 0, "total": 0})
 
             _bc(s, {"type": "scan_progress", "page": page, "total_pages": total_pages,
-                    "found": len(found_map)})
+                    "found": len(found)})
             page += 1
-
-        # Send final ship list with accurate counts
-        found = list(found_map.values())
-        for ship in found:
-            _bc(s, {"type": "ship", "sn": ship["sn"], "failed": ship["failed"],
-                    "state": "found", "done": 0, "total": 0})
 
         s["ships"] = found
         s["stats"]["found"] = len(found)
