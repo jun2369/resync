@@ -523,18 +523,20 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, w,
                      ship_stop: "threading.Event | None" = None) -> tuple:
     ok = fail = 0
     err_msgs: list = []
-    page = 1
-    total_pages = 9999
+    total_logged = False
+    attempted_ids: set = set()   # guard against infinite loop on permanently-failing events
 
     def _stopped():
         return s["stop"].is_set() or (ship_stop is not None and ship_stop.is_set())
 
-    while page <= total_pages and not _stopped():
+    while not _stopped():
         try:
+            # Always fetch page 1 — replayed events leave the ERROR list,
+            # so incrementing the page cursor would skip items.
             resp = _nimbus(token,
                            "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
                            {"shipmentId": sid, "operationResult": "ERROR",
-                            "current": page, "pageSize": 100})
+                            "current": 1, "pageSize": 100})
         except Exception as exc:
             _log(s, f"{sn} 获取事件失败: {exc}", "error")
             break
@@ -543,22 +545,31 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, w,
             _log(s, f"{sn} 错误: {resp.get('msg')}", "error")
             break
 
-        total_pages = resp.get("totalPages") or 1
-        if page == 1:
+        if not total_logged:
             tc = resp.get("total") or 0
-            _log(s, f"  {sn}: {tc} 条失败事件，{total_pages} 页")
+            _log(s, f"  {sn}: {tc} 条失败事件")
             s["stats"]["total_ev"] += tc
             _push_stat(s)
+            total_logged = True
 
         events = resp.get("data") or []
+        if not events:
+            break   # no more ERROR events
+
+        # Stop if every event in this page was already attempted (all permanently failing)
+        new_events = [ev for ev in events if (ev.get("id") or 0) not in attempted_ids]
+        if not new_events:
+            break
+        for ev in new_events:
+            attempted_ids.add(ev.get("id") or 0)
+
         if _stopped():
             return ok, fail, err_msgs
 
-        # Replay up to 10 events concurrently per page
         with ThreadPoolExecutor(max_workers=15) as pool:
             future_map = {
                 pool.submit(_replay, token, ev.get("id") or 0): ev
-                for ev in events
+                for ev in new_events
             }
             for fut in as_completed(future_map):
                 ev      = future_map[fut]
@@ -575,10 +586,6 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, w,
                         err_msgs.append(f"{action}: {msg}")
                 s["stats"]["done_ev"] += 1
                 _push_stat(s)
-
-        if page >= total_pages:
-            break
-        page += 1
 
     return ok, fail, err_msgs
 

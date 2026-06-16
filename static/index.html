@@ -611,9 +611,13 @@ async function doResyncOne(sn) {
   startSSE();
   const r = await post('/api/resync_one', {sn});
   if (!r.ok) {
+    stopSSE();
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
     alert(r.error || '操作失败');
+    return;
   }
+  const ship = _ships[sn];
+  if (ship) upsertRow({sn, failed: ship.failed, state: 'running', done: 0, total: 0});
 }
 
 async function doStopOne(sn) {
