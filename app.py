@@ -292,6 +292,98 @@ def api_stop_one():
         _log(s, f"{sn} 已取消", "warning")
     return jsonify({"ok": True})
 
+
+@app.route("/api/add_manual", methods=["POST"])
+def api_add_manual():
+    s = _sess()
+    if not s["token"]:
+        return jsonify({"ok": False, "error": "请先登录"}), 401
+    sn = ((request.json or {}).get("sn") or "").strip()
+    if not sn:
+        return jsonify({"ok": False, "error": "请输入 Shipment Number"})
+
+    token = s["token"]
+    found_sid = None
+    error_count = 0
+
+    # Attempt 1: query parcelTrack-event with shipmentNumber filter
+    try:
+        page, total_pages = 1, 9999
+        while page <= total_pages:
+            resp = _nimbus(token,
+                           "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                           {"shipmentNumber": sn, "operationResult": "ERROR",
+                            "current": page, "pageSize": 100})
+            if not resp.get("success"):
+                break
+            total_pages = resp.get("totalPages") or 1
+            items = resp.get("data") or []
+            for item in items:
+                if not found_sid:
+                    found_sid = str(item.get("shipmentId") or "").strip()
+                error_count += 1
+            if not items:
+                break
+            page += 1
+    except Exception:
+        pass
+
+    # Attempt 2: globalSearch → get shipmentId → query parcelTrack-event
+    if not found_sid:
+        try:
+            page, total_pages = 1, 9999
+            while page <= total_pages and not found_sid:
+                resp = _nimbus(token,
+                               "/api/admin/operate/tenant-sync/shipment-event/globalSearch",
+                               {"shipmentNumber": sn, "current": page, "pageSize": 20})
+                if not resp.get("success"):
+                    break
+                total_pages = resp.get("totalPages") or 1
+                for item in (resp.get("data") or []):
+                    if (item.get("shipmentNumber") or "").strip() == sn:
+                        found_sid = str(item.get("shipmentId") or "").strip()
+                        break
+                page += 1
+
+            if found_sid:
+                page, total_pages, error_count = 1, 9999, 0
+                while page <= total_pages:
+                    resp = _nimbus(token,
+                                   "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                                   {"shipmentId": found_sid, "operationResult": "ERROR",
+                                    "current": page, "pageSize": 100})
+                    if not resp.get("success"):
+                        break
+                    total_pages = resp.get("totalPages") or 1
+                    items = resp.get("data") or []
+                    error_count += len(items)
+                    if not items:
+                        break
+                    page += 1
+        except Exception:
+            pass
+
+    if not found_sid:
+        return jsonify({"ok": False, "error": f"找不到 Shipment：{sn}"})
+    if error_count == 0:
+        return jsonify({"ok": False, "error": f"{sn} 没有 ERROR 记录"})
+
+    ship = {"sn": sn, "sid": found_sid, "failed": error_count,
+            "state": "found", "done": 0, "total": 0}
+    idx = next((i for i, x in enumerate(s["ships"]) if x["sn"] == sn), -1)
+    if idx >= 0:
+        s["ships"][idx] = ship
+    else:
+        s["ships"].append(ship)
+
+    s["stats"]["found"] = len(s["ships"])
+    _bc(s, {"type": "ship", "sn": sn, "failed": error_count,
+             "state": "found", "done": 0, "total": 0})
+    _push_stat(s)
+    _log(s, f"手动添加 {sn}：{error_count} 条 ERROR 事件", "warning")
+    return jsonify({"ok": True, "sn": sn, "failed": error_count})
+
+
 # ── Background: scan ──────────────────────────────────────────────────────────
 
 def _scan_worker(s: dict):

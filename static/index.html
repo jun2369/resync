@@ -173,6 +173,20 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     </div>
   </div>
 
+  <!-- Manual shipment number input -->
+  <div class="g-card p-3 mb-3" id="card-manual">
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <span style="font-size:.85rem;color:var(--muted);white-space:nowrap">手动添加单号</span>
+      <input class="g-input" id="inp-manual-sn" placeholder="输入 Shipment Number"
+        style="flex:1;min-width:180px;max-width:320px;padding:7px 12px;font-size:.88rem"
+        onkeydown="if(event.key==='Enter')doAddManual()">
+      <button class="g-btn g-btn-ghost" id="btn-manual" onclick="doAddManual()" style="padding:7px 18px">
+        <i class="bi bi-plus-circle"></i>添加
+      </button>
+      <span id="manual-msg" style="font-size:.82rem;display:none"></span>
+    </div>
+  </div>
+
   <!-- Step 2: ReSync (shown after scan finds results) -->
   <div class="g-card p-4 mb-3" id="card-resync" style="display:none">
 
@@ -604,6 +618,35 @@ async function doResyncOne(sn) {
 
 async function doStopOne(sn) {
   await post('/api/stop_one', {sn});
+}
+
+async function doAddManual() {
+  const inp = document.getElementById('inp-manual-sn');
+  const msg = document.getElementById('manual-msg');
+  const btn = document.getElementById('btn-manual');
+  const sn = inp.value.trim();
+  if (!sn) return;
+
+  btn.disabled = true;
+  msg.style.display = '';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = '查询中…';
+
+  startSSE();
+  const r = await post('/api/add_manual', {sn});
+
+  btn.disabled = false;
+  if (r.ok) {
+    msg.style.color = 'var(--green)';
+    msg.textContent = `✓ ${r.sn} 已添加，${r.failed} 条 ERROR`;
+    inp.value = '';
+    document.getElementById('card-resync').style.display = '';
+    document.getElementById('card-ships').style.display  = '';
+  } else {
+    stopSSE();
+    msg.style.color = 'var(--red)';
+    msg.textContent = r.error || '添加失败';
+  }
 }
 
 async function doStop() {
