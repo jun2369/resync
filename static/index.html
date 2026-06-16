@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nimbus Auto ReSync</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+:root {
+  --bg:      #0d1117;
+  --surface: #161b22;
+  --border:  #30363d;
+  --accent:  #6e76fc;
+  --green:   #3fb950;
+  --red:     #f85149;
+  --yellow:  #d29922;
+  --muted:   #8b949e;
+  --text:    #e6edf3;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; min-height: 100vh; }
+
+/* Cards */
+.g-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+
+/* Buttons */
+.g-btn { border: none; border-radius: 8px; padding: 9px 22px; font-size: .9rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; transition: opacity .15s, transform .1s; }
+.g-btn:disabled { opacity: .35; cursor: not-allowed; }
+.g-btn:not(:disabled):hover { opacity: .87; }
+.g-btn:not(:disabled):active { transform: scale(.97); }
+.g-btn-primary { background: var(--accent); color: #fff; }
+.g-btn-success { background: var(--green);  color: #fff; }
+.g-btn-danger  { background: var(--red);    color: #fff; }
+.g-btn-ghost   { background: #21262d;       color: var(--text); border: 1px solid var(--border); }
+.g-btn-lg      { padding: 12px 32px; font-size: 1rem; border-radius: 10px; }
+
+/* Form */
+.g-input { background: #0d1117; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px 14px; font-size: .9rem; width: 100%; outline: none; transition: border-color .2s; }
+.g-input:focus { border-color: var(--accent); }
+.g-input::placeholder { color: var(--muted); }
+
+/* Progress */
+.g-prog-wrap { height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
+.g-prog-bar  { height: 100%; background: var(--accent); border-radius: 4px; transition: width .5s ease; }
+.g-prog-pulse { animation: prog-pulse 1.5s ease-in-out infinite; }
+@keyframes prog-pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+/* Badges */
+.g-badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: .78rem; font-weight: 600; }
+.g-badge-red    { background: #3d1c1c; color: var(--red); }
+.g-badge-green  { background: #1a3028; color: var(--green); }
+.g-badge-yellow { background: #2d2009; color: var(--yellow); }
+.g-badge-blue   { background: #1c2340; color: #79c0ff; }
+.g-badge-gray   { background: #21262d; color: var(--muted); }
+
+/* Shipment rows */
+.ship-row { border-bottom: 1px solid #1c2128; transition: background .15s; }
+.ship-row:last-child { border-bottom: none; }
+.ship-row:hover { background: #1c2128; }
+.ship-row td { padding: 11px 14px; vertical-align: middle; }
+.sn-mono { font-family: "Consolas", "SF Mono", monospace; font-size: .88rem; }
+
+/* Status dot */
+.s-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.s-dot-idle    { background: #484f58; }
+.s-dot-busy    { background: var(--yellow); animation: blink 1s ease-in-out infinite; }
+.s-dot-ok      { background: var(--green); }
+.s-dot-err     { background: var(--red); }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* Collapse toggle */
+.collapse-toggle { cursor: pointer; color: var(--muted); font-size: .83rem; text-decoration: none; }
+.collapse-toggle:hover { color: var(--text); }
+
+/* Views */
+#view-login    { display: none; }
+#view-app      { display: none; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+@media (max-width: 576px) {
+  .g-btn-lg { width: 100%; justify-content: center; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── LOGIN VIEW ─────────────────────────────────────────────────────────── -->
+<div id="view-login" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px">
+  <div class="g-card p-4 p-md-5" style="width:100%;max-width:420px">
+
+    <div class="text-center mb-4">
+      <i class="bi bi-arrow-repeat" style="font-size:2rem;color:var(--accent)"></i>
+      <h1 style="font-size:1.4rem;font-weight:700;margin:.5rem 0 .25rem">Nimbus Auto ReSync</h1>
+      <p style="color:var(--muted);font-size:.88rem;margin:0">自动批量修复 HAWB Milestone 失败记录</p>
+    </div>
+
+    <!-- Login form -->
+    <div id="login-error" class="alert alert-danger py-2 px-3 mb-3" style="display:none;font-size:.85rem;border-radius:8px;background:#3d1c1c;border:1px solid #6e3030;color:#f85149"></div>
+
+    <div class="mb-3">
+      <label class="form-label text-muted" style="font-size:.82rem">账号</label>
+      <input class="g-input" id="inp-user" type="email" placeholder="邮箱账号" autocomplete="username">
+    </div>
+    <div class="mb-4">
+      <label class="form-label text-muted" style="font-size:.82rem">密码</label>
+      <input class="g-input" id="inp-pw" type="password" placeholder="密码" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="g-btn g-btn-primary g-btn-lg w-100" id="btn-login" onclick="doLogin()">
+      <i class="bi bi-box-arrow-in-right"></i>登录
+    </button>
+
+    <!-- Token fallback -->
+    <div class="mt-3 text-center">
+      <a class="collapse-toggle" onclick="toggleTokenPane()">
+        <i class="bi bi-chevron-down" id="tok-chevron"></i> 使用 Token 直接登录
+      </a>
+    </div>
+    <div id="token-pane" style="display:none;margin-top:12px">
+      <textarea class="g-input" id="inp-tok" rows="3"
+        placeholder="从浏览器 DevTools → Network → Authorization 复制 Bearer token（不含 'Bearer '）"
+        style="font-size:.78rem;resize:vertical"></textarea>
+      <button class="g-btn g-btn-ghost w-100 mt-2" onclick="doSetToken()">
+        <i class="bi bi-key"></i>使用此 Token 登录
+      </button>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── APP VIEW ────────────────────────────────────────────────────────────── -->
+<div id="view-app" style="max-width:860px;margin:0 auto;padding:20px">
+
+  <!-- Header -->
+  <div class="d-flex align-items-center mb-4 gap-3">
+    <i class="bi bi-arrow-repeat" style="font-size:1.4rem;color:var(--accent)"></i>
+    <span style="font-size:1.1rem;font-weight:700">Nimbus Auto ReSync</span>
+    <span class="s-dot s-dot-idle ms-1" id="s-dot"></span>
+    <span id="s-txt" style="font-size:.82rem;color:var(--muted)">就绪</span>
+    <div class="ms-auto d-flex align-items-center gap-3">
+      <span style="font-size:.82rem;color:var(--muted)"><i class="bi bi-person-circle me-1"></i><span id="s-user"></span></span>
+      <button class="g-btn g-btn-ghost" style="padding:5px 14px;font-size:.82rem" onclick="doLogout()">
+        <i class="bi bi-box-arrow-right"></i>退出
+      </button>
+    </div>
+  </div>
+
+  <!-- Step 1: Scan -->
+  <div class="g-card p-4 mb-3" id="card-scan">
+    <div class="d-flex align-items-center justify-content-between flex-wrap gap-3">
+      <div>
+        <div style="font-weight:600;font-size:1rem">① 扫描 Dashboard</div>
+        <div id="scan-desc" style="color:var(--muted);font-size:.85rem;margin-top:3px">
+          查找所有存在 HAWB Milestone 失败的 Shipment
+        </div>
+      </div>
+      <button class="g-btn g-btn-primary" id="btn-scan" onclick="doScan()">
+        <i class="bi bi-search"></i>开始扫描
+      </button>
+    </div>
+    <div id="scan-prog" style="display:none;margin-top:14px">
+      <div class="d-flex justify-content-between mb-1" style="font-size:.8rem;color:var(--muted)">
+        <span id="scan-prog-txt">正在扫描…</span>
+        <span id="scan-prog-pct"></span>
+      </div>
+      <div class="g-prog-wrap" style="height:6px">
+        <div class="g-prog-bar g-prog-pulse" id="scan-prog-bar" style="width:100%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 2: ReSync (shown after scan finds results) -->
+  <div class="g-card p-4 mb-3" id="card-resync" style="display:none">
+
+    <!-- Summary row -->
+    <div class="row g-3 mb-3">
+      <div class="col-4 text-center">
+        <div style="font-size:2rem;font-weight:700;color:var(--yellow)" id="n-found">0</div>
+        <div style="font-size:.78rem;color:var(--muted)">失败 Shipment</div>
+      </div>
+      <div class="col-4 text-center">
+        <div style="font-size:2rem;font-weight:700;color:var(--green)" id="n-ok">—</div>
+        <div style="font-size:.78rem;color:var(--muted)">成功 Events</div>
+      </div>
+      <div class="col-4 text-center">
+        <div style="font-size:2rem;font-weight:700;color:var(--red)" id="n-fail">—</div>
+        <div style="font-size:.78rem;color:var(--muted)">失败 Events</div>
+      </div>
+    </div>
+
+    <!-- Progress bar -->
+    <div id="prog-section" style="margin-bottom:16px">
+      <div class="d-flex justify-content-between mb-1" style="font-size:.82rem;color:var(--muted)">
+        <span id="prog-label">准备就绪</span>
+        <span id="prog-pct"></span>
+      </div>
+      <div class="g-prog-wrap" style="height:10px">
+        <div class="g-prog-bar" id="prog-bar" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="d-flex gap-2 flex-wrap" id="action-btns">
+      <button class="g-btn g-btn-success g-btn-lg" id="btn-resync" onclick="doResync()">
+        <i class="bi bi-play-fill"></i>开始全部 ReSync
+      </button>
+      <button class="g-btn g-btn-danger g-btn-lg" id="btn-stop" onclick="doStop()" style="display:none">
+        <i class="bi bi-stop-fill"></i>停止
+      </button>
+    </div>
+  </div>
+
+  <!-- Shipment list -->
+  <div class="g-card" id="card-ships" style="display:none">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.9rem">
+      失败 Shipment 列表
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:#1c2128">
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Shipment Number</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">HAWB Failed</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">状态</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">进度</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">操作</th>
+          </tr>
+        </thead>
+        <tbody id="ship-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /view-app -->
+
+<!-- ── LOADING OVERLAY ─────────────────────────────────────────────────────── -->
+<div id="overlay" style="position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:9999">
+  <i class="bi bi-arrow-repeat" style="font-size:2rem;color:var(--accent);animation:spin 1s linear infinite"></i>
+</div>
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let _loggedIn  = false;
+let _username  = "";
+let _ships     = {};   // sn -> {failed, state, done, total}
+let _stats     = {found:0, ok:0, fail:0, total_ev:0, done_ev:0};
+let _status    = "idle";
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  const me = await fetch('/api/me').then(r=>r.json()).catch(()=>({logged_in:false}));
+  _loggedIn = me.logged_in;
+  _username = me.username || "";
+  _stats    = me.stats || {found:0,ok:0,fail:0,total_ev:0,done_ev:0};
+  _status   = me.status || "idle";
+
+  // Restore ships
+  for (const s of (me.ships || [])) {
+    _ships[s.sn] = s;
+    upsertRow(s);
+  }
+
+  document.getElementById('overlay').style.display = 'none';
+
+  if (_loggedIn) {
+    showApp();
+    applyStats();
+    applyStatus(_status);
+    if ((me.ships||[]).length > 0) {
+      document.getElementById('card-resync').style.display = '';
+      document.getElementById('card-ships').style.display  = '';
+    }
+  } else {
+    showLogin();
+  }
+
+  startSSE();
+}
+
+// ── Views ─────────────────────────────────────────────────────────────────────
+function showLogin() {
+  document.getElementById('view-login').style.display = 'flex';
+  document.getElementById('view-app').style.display   = 'none';
+}
+function showApp() {
+  document.getElementById('view-login').style.display = 'none';
+  document.getElementById('view-app').style.display   = 'block';
+  document.getElementById('s-user').textContent = _username;
+}
+
+// ── SSE ───────────────────────────────────────────────────────────────────────
+function startSSE() {
+  const es = new EventSource('/api/stream');
+  es.onmessage = e => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'ping')          return;
+    if (ev.type === 'status')        applyStatus(ev.value);
+    if (ev.type === 'ship')          upsertRow(ev);
+    if (ev.type === 'stat')          applyStats(ev);
+    if (ev.type === 'scan_progress') onScanProgress(ev);
+    if (ev.type === 'scan_done')     onScanDone(ev.count);
+    if (ev.type === 'done')          onDone();
+  };
+  es.onerror = () => setTimeout(startSSE, 3000);
+}
+
+// ── Status ────────────────────────────────────────────────────────────────────
+const STATUS_LABEL = {
+  idle:'就绪', scanning:'扫描中…', scanned:'扫描完成',
+  resyncing:'ReSync 进行中…', done:'已完成', error:'出错'
+};
+function applyStatus(v) {
+  _status = v;
+  document.getElementById('s-txt').textContent = STATUS_LABEL[v] || v;
+
+  const dot = document.getElementById('s-dot');
+  dot.className = 'ms-1 s-dot ' + (
+    v==='scanning'||v==='resyncing' ? 's-dot-busy' :
+    v==='done'    ? 's-dot-ok'  :
+    v==='error'   ? 's-dot-err' : 's-dot-idle'
+  );
+
+  const busy = v==='scanning'||v==='resyncing';
+  // scan card
+  document.getElementById('btn-scan').disabled  = busy;
+  document.getElementById('scan-prog').style.display = v==='scanning' ? '' : 'none';
+  // resync buttons
+  const btnR = document.getElementById('btn-resync');
+  const btnS = document.getElementById('btn-stop');
+  if (v==='resyncing') {
+    btnR.style.display = 'none';
+    btnS.style.display = '';
+    document.getElementById('btn-scan').disabled = true;
+  } else {
+    btnR.style.display = '';
+    btnS.style.display = 'none';
+    btnR.disabled = (v==='scanning');
+  }
+  if (v==='done') {
+    document.getElementById('prog-label').textContent = '全部处理完成 ✓';
+    document.getElementById('prog-bar').classList.remove('g-prog-pulse');
+  }
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+function applyStats(s) {
+  if (s) _stats = {..._stats, ...s};
+  const ss = _stats;
+  document.getElementById('n-found').textContent = ss.found||'—';
+  document.getElementById('n-ok').textContent    = ss.ok||'—';
+  document.getElementById('n-fail').textContent  = ss.fail||'—';
+
+  if (ss.total_ev > 0) {
+    const pct = Math.min(100, Math.round(ss.done_ev / ss.total_ev * 100));
+    document.getElementById('prog-bar').style.width = pct + '%';
+    document.getElementById('prog-pct').textContent  = pct + '%';
+    document.getElementById('prog-label').textContent =
+      `已处理 ${ss.done_ev.toLocaleString()} / ${ss.total_ev.toLocaleString()} 条事件`;
+  }
+}
+
+// ── Shipment rows ─────────────────────────────────────────────────────────────
+const STATE_INFO = {
+  found:     { badge:'g-badge-yellow', label:'待处理' },
+  running:   { badge:'g-badge-blue',   label:'⏳ 处理中' },
+  done:      { badge:'g-badge-green',  label:'✅ 完成' },
+  partial:   { badge:'g-badge-yellow', label:'⚠ 部分完成' },
+  error:     { badge:'g-badge-red',    label:'❌ 失败' },
+  cancelled: { badge:'g-badge-gray',   label:'⏸ 已取消' },
+};
+
+function upsertRow(ev) {
+  _ships[ev.sn] = ev;
+  const tbody = document.getElementById('ship-body');
+  let   row   = document.getElementById('row-' + ev.sn);
+  const si    = STATE_INFO[ev.state] || STATE_INFO.found;
+
+  const progHtml = ev.total > 0
+    ? `<div class="g-prog-wrap" style="min-width:90px;margin:0 auto">
+         <div class="g-prog-bar" style="width:${Math.round(ev.done/ev.total*100)}%${ev.state==='running'?' transition:none':''}"></div>
+       </div>
+       <div style="font-size:.75rem;color:var(--muted);margin-top:2px">${ev.done}/${ev.total}</div>`
+    : '—';
+
+  const canResync = ['found','error','partial','cancelled'].includes(ev.state);
+  const btnHtml = ev.state === 'running'
+    ? `<button class="g-btn g-btn-danger" style="padding:4px 12px;font-size:.78rem"
+         onclick="doStopOne('${ev.sn.replace(/'/g,"\\'")}')">
+         <i class="bi bi-stop-fill"></i>取消
+       </button>`
+    : canResync
+      ? `<button class="g-btn g-btn-ghost" style="padding:4px 12px;font-size:.78rem"
+           onclick="doResyncOne('${ev.sn.replace(/'/g,"\\'")}')">
+           <i class="bi bi-arrow-repeat"></i>ReSync
+         </button>`
+      : `<span style="font-size:.78rem;color:var(--green)">✓</span>`;
+
+  const errHtml = (ev.errors && ev.errors.length > 0 && (ev.state === 'error' || ev.state === 'partial'))
+    ? `<tr id="err-${ev.sn}" class="ship-row">
+         <td colspan="5" style="padding:4px 14px 10px 28px">
+           ${ev.errors.map(e => `<div style="font-size:.76rem;color:var(--red);font-family:monospace">⚠ ${e}</div>`).join('')}
+         </td>
+       </tr>`
+    : '';
+
+  const html = `
+    <td><span class="sn-mono">${ev.sn}</span></td>
+    <td style="text-align:center"><span class="g-badge g-badge-red">${ev.failed}</span></td>
+    <td style="text-align:center"><span class="g-badge ${si.badge}">${si.label}</span></td>
+    <td style="text-align:center">${progHtml}</td>
+    <td style="text-align:center">${btnHtml}</td>`;
+
+  if (!row) {
+    row = document.createElement('tr');
+    row.id = 'row-' + ev.sn;
+    row.className = 'ship-row';
+    tbody.appendChild(row);
+  }
+  row.innerHTML = html;
+
+  // Error details row
+  const errKey = 'err-' + ev.sn;
+  let errRow = document.getElementById(errKey);
+  if (errHtml) {
+    if (!errRow) {
+      errRow = document.createElement('tbody');
+      errRow.innerHTML = errHtml;
+      row.after(errRow.firstChild);
+    } else {
+      errRow.outerHTML = errHtml;
+    }
+  } else if (errRow) {
+    errRow.remove();
+  }
+}
+
+function onScanProgress(ev) {
+  const pct = Math.round(ev.page / ev.total_pages * 100);
+  document.getElementById('scan-prog-bar').style.width = pct + '%';
+  document.getElementById('scan-prog-bar').classList.remove('g-prog-pulse');
+  document.getElementById('scan-prog-txt').textContent =
+    `扫描第 ${ev.page} / ${ev.total_pages} 页，已发现 ${ev.found} 个失败 Shipment`;
+  document.getElementById('scan-prog-pct').textContent = pct + '%';
+}
+
+function onScanDone(count) {
+  document.getElementById('scan-desc').textContent =
+    count > 0 ? `发现 ${count} 个 Shipment 存在 HAWB 失败，点击下方按钮开始批量 ReSync`
+               : '✓ 未发现 HAWB 失败记录，所有 Shipment 状态正常';
+
+  _stats.found = count;
+  document.getElementById('n-found').textContent = count;
+
+  if (count > 0) {
+    document.getElementById('card-resync').style.display = '';
+    document.getElementById('card-ships').style.display  = '';
+  }
+  applyStatus('scanned');
+}
+
+function onDone() {
+  applyStatus('done');
+  document.getElementById('prog-bar').style.width = '100%';
+  document.getElementById('prog-bar').classList.remove('g-prog-pulse');
+}
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+async function post(url, body={}) {
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { showLogin(); return {ok: false, error: '请先登录'}; }
+    return await r.json().catch(() => ({ok: false, error: '服务器响应异常'}));
+  } catch(e) {
+    return {ok: false, error: '网络错误: ' + e.message};
+  }
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+function toggleTokenPane() {
+  const p = document.getElementById('token-pane');
+  const c = document.getElementById('tok-chevron');
+  const open = p.style.display === 'none';
+  p.style.display = open ? '' : 'none';
+  c.className = open ? 'bi bi-chevron-up' : 'bi bi-chevron-down';
+}
+
+async function doLogin() {
+  const user = document.getElementById('inp-user').value.trim();
+  const pw   = document.getElementById('inp-pw').value;
+  const btn  = document.getElementById('btn-login');
+  const err  = document.getElementById('login-error');
+
+  if (!user || !pw) { showErr('请输入账号和密码'); return; }
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i>登录中…';
+  err.style.display = 'none';
+
+  const r = await post('/api/login', {username: user, password: pw});
+  if (r.ok) {
+    _loggedIn = true;
+    _username = r.username || user;
+    showApp();
+    startSSE();
+  } else {
+    showErr(r.error || '登录失败');
+  }
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-box-arrow-in-right"></i>登录';
+}
+
+async function doSetToken() {
+  const tok = document.getElementById('inp-tok').value.trim();
+  if (!tok) { showErr('请粘贴 Token'); return; }
+  const r = await post('/api/token', {token: tok});
+  if (r.ok) {
+    _loggedIn = true;
+    _username = r.username || 'Token 用户';
+    showApp();
+    startSSE();
+  } else {
+    showErr(r.error || '设置 Token 失败');
+  }
+}
+
+function showErr(msg) {
+  const el = document.getElementById('login-error');
+  el.textContent = msg;
+  el.style.display = '';
+}
+
+async function doLogout() {
+  await post('/api/logout');
+  _loggedIn = false;
+  _username = '';
+  _ships    = {};
+  _stats    = {found:0,ok:0,fail:0,total_ev:0,done_ev:0};
+  document.getElementById('ship-body').innerHTML = '';
+  document.getElementById('card-resync').style.display = 'none';
+  document.getElementById('card-ships').style.display  = 'none';
+  document.getElementById('scan-desc').textContent = '查找所有存在 HAWB Milestone 失败的 Shipment';
+  ['n-found','n-ok','n-fail'].forEach(id => document.getElementById(id).textContent = '—');
+  document.getElementById('prog-bar').style.width = '0%';
+  document.getElementById('prog-label').textContent = '准备就绪';
+  document.getElementById('prog-pct').textContent = '';
+  showLogin();
+}
+
+// ── Main actions ──────────────────────────────────────────────────────────────
+async function doScan() {
+  const r = await post('/api/scan');
+  if (!r.ok) {
+    if (r.error && r.error.includes('登录')) { showLogin(); return; }
+    alert(r.error || '扫描失败'); return;
+  }
+  document.getElementById('ship-body').innerHTML = '';
+  document.getElementById('card-resync').style.display = 'none';
+  document.getElementById('card-ships').style.display  = 'none';
+  document.getElementById('scan-prog-bar').style.width = '0%';
+  document.getElementById('scan-prog-bar').classList.add('g-prog-pulse');
+  document.getElementById('scan-prog-txt').textContent = '正在扫描…';
+  document.getElementById('scan-prog-pct').textContent = '';
+  _ships = {};
+}
+
+async function doResync() {
+  const r = await post('/api/resync');
+  if (!r.ok) {
+    if (r.error && r.error.includes('登录')) { showLogin(); return; }
+    alert(r.error || '操作失败'); return;
+  }
+  document.getElementById('prog-bar').classList.add('g-prog-pulse');
+}
+
+async function doResyncOne(sn) {
+  const r = await post('/api/resync_one', {sn});
+  if (!r.ok) {
+    if (r.error && r.error.includes('登录')) { showLogin(); return; }
+    alert(r.error || '操作失败');
+  }
+}
+
+async function doStopOne(sn) {
+  await post('/api/stop_one', {sn});
+}
+
+async function doStop() {
+  await post('/api/stop');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
