@@ -297,7 +297,7 @@ def api_stop_one():
 def _scan_worker(s: dict):
     s["stop"].clear()
     token = s["token"]
-    found = []
+    found_map = {}   # sid -> ship dict
 
     try:
         page = 1
@@ -305,8 +305,8 @@ def _scan_worker(s: dict):
 
         while page <= total_pages and not s["stop"].is_set():
             resp = _nimbus(token,
-                           "/api/admin/operate/tenant-sync/shipment-event/globalSearch",
-                           {"current": page, "pageSize": 20})
+                           "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                           {"operationResult": "ERROR", "current": page, "pageSize": 100})
 
             if not resp.get("success"):
                 _log(s, f"API 错误: {resp.get('msg')}", "error")
@@ -314,20 +314,28 @@ def _scan_worker(s: dict):
 
             total_pages = resp.get("totalPages") or 1
             if page == 1:
-                _log(s, f"共 {resp.get('total')} 个 Shipment，{total_pages} 页，正在扫描…")
+                _log(s, f"共 {resp.get('total')} 个失败事件，{total_pages} 页，正在扫描…")
 
             for item in (resp.get("data") or []):
-                fc  = (item.get("hawbMilestoneStatistics") or {}).get("failedCnt") or 0
-                if fc > 0:
-                    sn  = item.get("shipmentNumber") or "?"
-                    sid = item.get("shipmentId") or ""
-                    found.append({"sn": sn, "sid": sid, "failed": fc,
-                                  "state": "found", "done": 0, "total": 0})
-                    _bc(s, {"type": "ship", "sn": sn, "failed": fc,
-                             "state": "found", "done": 0, "total": 0})
+                sid = str(item.get("shipmentId") or "").strip()
+                sn  = (item.get("shipmentNumber") or "").strip()
+                if not sid:
+                    continue
+                if sid in found_map:
+                    found_map[sid]["failed"] += 1
+                else:
+                    found_map[sid] = {"sn": sn or sid, "sid": sid, "failed": 1,
+                                      "state": "found", "done": 0, "total": 0}
 
-            _bc(s, {"type": "scan_progress", "page": page, "total_pages": total_pages, "found": len(found)})
+            _bc(s, {"type": "scan_progress", "page": page, "total_pages": total_pages,
+                    "found": len(found_map)})
             page += 1
+
+        # Send final ship list with accurate counts
+        found = list(found_map.values())
+        for ship in found:
+            _bc(s, {"type": "ship", "sn": ship["sn"], "failed": ship["failed"],
+                    "state": "found", "done": 0, "total": 0})
 
         s["ships"] = found
         s["stats"]["found"] = len(found)
