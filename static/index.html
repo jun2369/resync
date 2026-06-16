@@ -585,14 +585,23 @@ async function doScan() {
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
     alert(r.error || '扫描失败'); return;
   }
-  document.getElementById('ship-body').innerHTML = '';
-  document.getElementById('card-resync').style.display = 'none';
-  document.getElementById('card-ships').style.display  = 'none';
+  // Remove non-manual rows; keep manually-added ones
+  for (const sn in _ships) {
+    if (!_ships[sn].manual) {
+      delete _ships[sn];
+      const row = document.getElementById('row-' + sn);
+      if (row) row.remove();
+    }
+  }
+  const hasManual = Object.keys(_ships).length > 0;
+  if (!hasManual) {
+    document.getElementById('card-resync').style.display = 'none';
+    document.getElementById('card-ships').style.display  = 'none';
+  }
   document.getElementById('scan-prog-bar').style.width = '0%';
   document.getElementById('scan-prog-bar').classList.add('g-prog-pulse');
   document.getElementById('scan-prog-txt').textContent = '正在扫描…';
   document.getElementById('scan-prog-pct').textContent = '';
-  _ships = {};
   applyStatus('scanning');
 }
 
@@ -652,7 +661,7 @@ async function doAddManual() {
     const r = await post('/api/add_manual', {sn});
     if (r.ok) {
       results.ok.push(`${r.sn}(${r.failed}条)`);
-      upsertRow({sn: r.sn, failed: r.failed, state: 'found', done: 0, total: 0});
+      upsertRow({sn: r.sn, failed: r.failed, state: 'found', done: 0, total: 0, manual: true});
       _stats.found = Object.keys(_ships).length;
       document.getElementById('n-found').textContent = _stats.found;
       document.getElementById('card-resync').style.display = '';

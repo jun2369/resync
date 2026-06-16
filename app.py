@@ -281,7 +281,8 @@ def api_scan():
     s = _sess()
     if not s["token"]:
         return jsonify({"ok": False, "error": "请先登录"}), 401
-    s["ships"] = []
+    # Keep manually-added ships; scan results will merge in
+    s["ships"] = [sh for sh in s["ships"] if sh.get("manual")]
     s["stats"] = _empty_stats()
     _push_status(s, "scanning")
     threading.Thread(target=_scan_worker, args=(s,), daemon=True).start()
@@ -410,7 +411,7 @@ def api_add_manual():
         return jsonify({"ok": False, "error": f"{sn} 没有 ERROR 记录"})
 
     ship = {"sn": sn, "sid": found_sid, "failed": error_count,
-            "state": "found", "done": 0, "total": 0}
+            "state": "found", "done": 0, "total": 0, "manual": True}
     idx = next((i for i, x in enumerate(s["ships"]) if x["sn"] == sn), -1)
     if idx >= 0:
         s["ships"][idx] = ship
@@ -444,7 +445,9 @@ def _get_error_count(token: str, sid: str) -> int:
 def _scan_worker(s: dict):
     s["stop"].clear()
     token = s["token"]
-    found = []
+    # Start with any manually-added ships already in the list
+    found = list(s["ships"])
+    existing_sns = {sh["sn"] for sh in found}
 
     try:
         page = 1
@@ -478,9 +481,12 @@ def _scan_worker(s: dict):
                     break
                 real_fc = _get_error_count(token, c["sid"])
                 if real_fc > 0:
+                    if c["sn"] in existing_sns:
+                        continue  # already added manually, skip
                     ship = {"sn": c["sn"], "sid": c["sid"], "failed": real_fc,
                             "state": "found", "done": 0, "total": 0}
                     found.append(ship)
+                    existing_sns.add(c["sn"])
                     _bc(s, {"type": "ship", "sn": c["sn"], "failed": real_fc,
                              "state": "found", "done": 0, "total": 0})
 
