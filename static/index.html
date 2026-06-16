@@ -550,7 +550,7 @@ async function post(url, body={}) {
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify(body),
     });
-    if (r.status === 401) { showLogin(); return {ok: false, error: '请先登录'}; }
+    if (r.status === 401 && !url.includes('/api/login')) { showLogin(); return {ok: false, error: '请先登录'}; }
     return await r.json().catch(() => ({ok: false, error: '服务器响应异常'}));
   } catch(e) {
     return {ok: false, error: '网络错误: ' + e.message};

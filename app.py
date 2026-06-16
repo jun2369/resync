@@ -257,8 +257,7 @@ def api_login():
         except Exception:
             pass
 
-    return jsonify({"ok": False,
-                    "error": "登录失败，请检查账号密码，或使用 Token 直接登录"}), 401
+    return jsonify({"ok": False, "error": "账号或密码错误，请重试"}), 401
 
 
 @app.route("/api/token", methods=["POST"])
