@@ -43,6 +43,33 @@ app.config.update(
 _store: dict = {}
 _store_lock = threading.Lock()
 
+# ── Global operation log (shared across all sessions) ─────────────────────────
+_OP_LOG_FILE = Path("logs") / "op_log.jsonl"
+_op_log: list = []
+_op_log_lock  = threading.Lock()
+
+def _load_op_log():
+    if _OP_LOG_FILE.exists():
+        with open(_OP_LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        _op_log.append(json.loads(line))
+                    except Exception:
+                        pass
+
+_load_op_log()
+
+def _append_op_log(entry: dict):
+    with _op_log_lock:
+        _op_log.append(entry)
+        try:
+            with open(_OP_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
 
 def _evict_old():
     """Remove sessions idle for more than 8 hours."""
@@ -615,6 +642,16 @@ def api_ship_reasons():
     return jsonify({"ok": True, "summary": summary})
 
 
+@app.route("/api/logs")
+def api_logs():
+    s = _sess()
+    if not s.get("token"):
+        return jsonify({"ok": False, "error": "未登录"}), 401
+    with _op_log_lock:
+        entries = list(reversed(_op_log))   # most recent first
+    return jsonify({"ok": True, "logs": entries[:500]})
+
+
 def _scan_worker(s: dict):
     s["stop"].clear()
     token = s["token"]
@@ -719,6 +756,14 @@ def _resync_one_ship_standalone(s: dict, ship: dict):
     s["stats"]["fail"] += fail
     _push_ship(s, sn, ship["failed"], state, ok, ok + fail, errs)
     _push_stat(s, force=True)
+    _append_op_log({
+        "ts":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "user":  s.get("username", ""),
+        "sn":    sn,
+        "ok":    ok,
+        "fail":  fail,
+        "state": state,
+    })
 
 
 def _resync_worker(s: dict):
@@ -753,6 +798,14 @@ def _resync_worker(s: dict):
             s["stats"]["fail"] += fail
             _push_ship(s, sn, ship["failed"], state, ok, ok + fail, errs)
             _push_stat(s, force=True)
+            _append_op_log({
+                "ts":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "user":  s.get("username", ""),
+                "sn":    sn,
+                "ok":    ok,
+                "fail":  fail,
+                "state": state,
+            })
 
     _log(s,
          f"全部完成 ✓  ReSync 成功: {s['stats']['ok']}  失败: {s['stats']['fail']}  "

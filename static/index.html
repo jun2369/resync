@@ -77,6 +77,16 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
 #view-login    { display: none; }
 #view-app      { display: none; }
 
+/* Page tabs */
+.g-tab { background: none; border: none; color: var(--muted); font-size: .88rem; font-weight: 600; padding: 7px 18px; border-radius: 8px; cursor: pointer; transition: background .15s, color .15s; }
+.g-tab:hover { background: #21262d; color: var(--text); }
+.g-tab.active { background: #21262d; color: var(--text); }
+
+/* Log table */
+.log-row { border-bottom: 1px solid #1c2128; }
+.log-row:last-child { border-bottom: none; }
+.log-row td { padding: 9px 12px; font-size: .83rem; vertical-align: middle; }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -140,6 +150,19 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
       </button>
     </div>
   </div>
+
+  <!-- Tab navigation -->
+  <div class="d-flex gap-1 mb-4" style="border-bottom:1px solid var(--border);padding-bottom:4px">
+    <button class="g-tab active" id="tab-main" onclick="showPage('main')">
+      <i class="bi bi-house me-1"></i>主页
+    </button>
+    <button class="g-tab" id="tab-logs" onclick="showPage('logs')">
+      <i class="bi bi-journal-text me-1"></i>操作日志
+    </button>
+  </div>
+
+  <!-- ── Page: Main ── -->
+  <div id="page-main">
 
   <!-- Step 1: Scan -->
   <div class="g-card p-4 mb-3" id="card-scan">
@@ -239,6 +262,37 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
       </table>
     </div>
   </div>
+
+  </div><!-- /page-main -->
+
+  <!-- ── Page: Logs ── -->
+  <div id="page-logs" style="display:none">
+    <div class="g-card">
+      <div class="d-flex align-items-center justify-content-between p-3" style="border-bottom:1px solid var(--border)">
+        <span style="font-weight:600;font-size:.95rem"><i class="bi bi-journal-text me-2" style="color:var(--accent)"></i>ReSync 操作日志</span>
+        <button class="g-btn g-btn-ghost" style="padding:4px 14px;font-size:.82rem" onclick="loadLogs()">
+          <i class="bi bi-arrow-clockwise"></i>刷新
+        </button>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:#1c2128">
+              <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left;white-space:nowrap">时间</th>
+              <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">操作账号</th>
+              <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Shipment Number</th>
+              <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">成功</th>
+              <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">失败</th>
+              <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">状态</th>
+            </tr>
+          </thead>
+          <tbody id="log-body">
+            <tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div><!-- /page-logs -->
 
 </div><!-- /view-app -->
 
@@ -622,6 +676,47 @@ function showErr(msg) {
   el.style.display = '';
 }
 
+// ── Page switching ────────────────────────────────────────────────────────────
+function showPage(name) {
+  document.getElementById('page-main').style.display = name === 'main' ? '' : 'none';
+  document.getElementById('page-logs').style.display = name === 'logs' ? '' : 'none';
+  document.getElementById('tab-main').classList.toggle('active', name === 'main');
+  document.getElementById('tab-logs').classList.toggle('active', name === 'logs');
+  if (name === 'logs') loadLogs();
+}
+
+const LOG_STATE = {
+  done:      { badge: 'g-badge-green',  label: '完成' },
+  partial:   { badge: 'g-badge-yellow', label: '部分完成' },
+  error:     { badge: 'g-badge-red',    label: '失败' },
+  cancelled: { badge: 'g-badge-gray',   label: '已取消' },
+};
+
+async function loadLogs() {
+  const tbody = document.getElementById('log-body');
+  tbody.innerHTML = '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">加载中…</td></tr>';
+  try {
+    const r = await fetch('/api/logs').then(res => res.json());
+    if (!r.ok || !r.logs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">暂无操作记录</td></tr>';
+      return;
+    }
+    tbody.innerHTML = r.logs.map(entry => {
+      const si = LOG_STATE[entry.state] || LOG_STATE.done;
+      return `<tr class="log-row">
+        <td style="white-space:nowrap;color:var(--muted)">${entry.ts}</td>
+        <td style="color:var(--text)">${entry.user || '—'}</td>
+        <td><span class="sn-mono">${entry.sn}</span></td>
+        <td style="text-align:center;color:var(--green);font-weight:600">${entry.ok}</td>
+        <td style="text-align:center;color:${entry.fail > 0 ? 'var(--red)' : 'var(--muted)'};font-weight:600">${entry.fail}</td>
+        <td style="text-align:center"><span class="g-badge ${si.badge}">${si.label}</span></td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--red)">加载失败</td></tr>';
+  }
+}
+
 async function doLogout() {
   await post('/api/logout');
   _loggedIn = false;
@@ -637,6 +732,7 @@ async function doLogout() {
   document.getElementById('prog-bar').style.width = '0%';
   document.getElementById('prog-label').textContent = '准备就绪';
   document.getElementById('prog-pct').textContent = '';
+  showPage('main');
   showLogin();
 }
 
