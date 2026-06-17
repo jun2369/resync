@@ -62,13 +62,25 @@ def _load_op_log():
 _load_op_log()
 
 def _append_op_log(entry: dict):
+    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     with _op_log_lock:
         _op_log.append(entry)
-        try:
-            with open(_OP_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+        # Purge entries older than 30 days (ts format: "YYYY-MM-DD HH:MM:SS")
+        kept = [e for e in _op_log if (e.get("ts") or "") >= cutoff]
+        if len(kept) != len(_op_log):
+            _op_log[:] = kept
+            try:
+                with open(_OP_LOG_FILE, "w", encoding="utf-8") as f:
+                    for e in kept:
+                        f.write(json.dumps(e, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        else:
+            try:
+                with open(_OP_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
 
 
 def _evict_old():
