@@ -116,7 +116,7 @@ def _check_permission(tok: str) -> str:
         if r.status_code == 401:
             return "Token 已过期或无效，请重新登录"
         if r.status_code == 403:
-            return "该账号没有 Nimbus Admin 操作权限，请使用有管理员权限的账号登录（如 @speedx.io）"
+            return "该账号没有 Nimbus Admin 操作权限，请使用有管理员权限的账号登录"
     except Exception:
         pass
     # Check replay (write) permission with a non-existent ID — 403 means no write access
@@ -124,7 +124,7 @@ def _check_permission(tok: str) -> str:
         r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/replay",
                      json={"id": 0}, timeout=10, headers=hdrs)
         if r.status_code == 403:
-            return "该账号没有 ReSync 操作权限，请使用有管理员权限的账号登录（如 @speedx.io）"
+            return "该账号没有 ReSync 操作权限，请使用有管理员权限的账号登录"
     except Exception:
         pass
     return ""
