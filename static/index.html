@@ -752,6 +752,8 @@ async function doScan() {
       delete _reasons[sn];
       const row = document.getElementById('row-' + sn);
       if (row) row.remove();
+      const errRow = document.getElementById('err-' + sn);
+      if (errRow) errRow.remove();
     }
   }
   const hasManual = Object.keys(_ships).length > 0;

@@ -922,6 +922,9 @@ def _replay(token: str, ev_num: int) -> tuple:
                        "/api/admin/operate/tenant-sync/parcelTrack-event/replay",
                        {"id": ev_num}, timeout=15)
         msg = resp.get("msg") or ""
+        # "event success can't replay" means the event is already SUCCESS — treat as ok
+        if msg and "success" in msg.lower() and "replay" in msg.lower():
+            return True, msg
         return (resp.get("success") is True or resp.get("code") == 0), msg
     except Exception as exc:
         return False, str(exc)
