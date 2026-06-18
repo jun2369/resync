@@ -731,7 +731,9 @@ def _scan_worker(s: dict):
                 sid = str(item.get("shipmentId") or "").strip()
                 sn  = (item.get("shipmentNumber") or "").strip()
                 if sid and sn and sn not in existing_sns:
-                    candidates.append({"sn": sn, "sid": sid})
+                    ca = (item.get("createdAt") or item.get("createTime") or
+                          item.get("created_at") or item.get("createDate") or "")
+                    candidates.append({"sn": sn, "sid": sid, "created_at": str(ca)})
 
             if candidates and not s["stop"].is_set():
                 with ThreadPoolExecutor(max_workers=15) as pool:
@@ -747,11 +749,13 @@ def _scan_worker(s: dict):
                             real_fc = 0
                         if real_fc > 0:
                             ship = {"sn": c["sn"], "sid": c["sid"], "failed": real_fc,
-                                    "state": "found", "done": 0, "total": 0}
+                                    "state": "found", "done": 0, "total": 0,
+                                    "created_at": c.get("created_at", "")}
                             found.append(ship)
                             existing_sns.add(c["sn"])
                             _bc(s, {"type": "ship", "sn": c["sn"], "failed": real_fc,
-                                     "state": "found", "done": 0, "total": 0})
+                                     "state": "found", "done": 0, "total": 0,
+                                     "created_at": c.get("created_at", "")})
 
             _bc(s, {"type": "scan_progress", "page": page, "total_pages": total_pages,
                     "found": len(found)})

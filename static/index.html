@@ -252,6 +252,7 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
           <tr style="background:#1c2128">
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Shipment Number</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">HAWB Failed</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Created At</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">原因</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">状态</th>
             <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">进度</th>
@@ -509,6 +510,7 @@ function upsertRow(ev) {
       </button>
     </td>
     <td style="text-align:center"><span class="g-badge g-badge-red">${ev.failed}</span></td>
+    <td style="font-size:.8rem;color:var(--muted);white-space:nowrap">${ev.created_at || '—'}</td>
     <td class="reasons-cell" style="padding:6px 14px;min-width:170px;max-width:240px;vertical-align:top">${_reasonsHtml(ev.sn)}</td>
     <td style="text-align:center"><span class="g-badge ${si.badge}">${si.label}</span></td>
     <td style="text-align:center">${progHtml}</td>
@@ -556,7 +558,8 @@ async function onScanDone(count) {
         if (!_ships[sh.sn]) {
           _ships[sh.sn] = sh;
           upsertRow({sn: sh.sn, failed: sh.failed, state: sh.state || 'found',
-                     done: sh.done || 0, total: sh.total || 0, manual: sh.manual});
+                     done: sh.done || 0, total: sh.total || 0, manual: sh.manual,
+                     created_at: sh.created_at || ''});
         }
       }
       count = me.ships.length;
