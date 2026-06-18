@@ -230,13 +230,31 @@ def index():
 @app.route("/api/stream")
 def api_stream():
     s = _sess()
+    # Assign a unique ID to this connection; supersedes any prior connection.
+    conn_id = time.time()
+    s["_sse_conn"] = conn_id
 
     def _gen():
-        while True:
+        # Immediately replay current ship state so reconnecting clients catch up.
+        for ship in list(s.get("ships", [])):
+            ev = {"type": "ship", "sn": ship["sn"],
+                  "failed": ship.get("failed", 0), "state": ship.get("state", "found"),
+                  "done": ship.get("done", 0),    "total": ship.get("total", 0)}
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        cur = s.get("status", "idle")
+        if cur != "idle":
+            yield f"data: {json.dumps({'type':'status','value':cur}, ensure_ascii=False)}\n\n"
+
+        while s.get("_sse_conn") == conn_id:
             try:
-                ev = s["q"].get(timeout=25)
+                ev = s["q"].get(timeout=20)
+                # If we've been superseded, discard the event and stop.
+                if s.get("_sse_conn") != conn_id:
+                    break
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             except queue.Empty:
+                if s.get("_sse_conn") != conn_id:
+                    break
                 yield 'data: {"type":"ping"}\n\n'
 
     return Response(

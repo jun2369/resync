@@ -738,7 +738,8 @@ async function doLogout() {
 
 // ── Main actions ──────────────────────────────────────────────────────────────
 async function doScan() {
-  startSSE();
+  // Only (re)start SSE if it's actually dead — don't create a competing connection.
+  if (!_es || _es.readyState === EventSource.CLOSED) startSSE();
   const r = await post('/api/scan');
   if (!r.ok) {
     stopSSE();
