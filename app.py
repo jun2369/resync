@@ -235,12 +235,7 @@ def api_stream():
     s["_sse_conn"] = conn_id
 
     def _gen():
-        # Immediately replay current ship state so reconnecting clients catch up.
-        for ship in list(s.get("ships", [])):
-            ev = {"type": "ship", "sn": ship["sn"],
-                  "failed": ship.get("failed", 0), "state": ship.get("state", "found"),
-                  "done": ship.get("done", 0),    "total": ship.get("total", 0)}
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        # Send current status so the UI indicator is correct on reconnect.
         cur = s.get("status", "idle")
         if cur != "idle":
             yield f"data: {json.dumps({'type':'status','value':cur}, ensure_ascii=False)}\n\n"

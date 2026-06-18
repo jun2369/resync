@@ -317,25 +317,16 @@ async function init() {
   const me = await fetch('/api/me').then(r=>r.json()).catch(()=>({logged_in:false}));
   _loggedIn = me.logged_in;
   _username = me.username || "";
-  _stats    = me.stats || {found:0,ok:0,fail:0,total_ev:0,done_ev:0};
+  // Do NOT restore ships or stats — table always starts empty after a page load.
+  // User must click "开始扫描" to get fresh data.
   _status   = me.status || "idle";
-
-  // Restore ships
-  for (const s of (me.ships || [])) {
-    _ships[s.sn] = s;
-    upsertRow(s);
-  }
 
   document.getElementById('overlay').style.display = 'none';
 
   if (_loggedIn) {
     showApp();
-    applyStats();
+    applyStats();      // renders "—" for all counters (default zero _stats)
     applyStatus(_status);
-    if ((me.ships||[]).length > 0) {
-      document.getElementById('card-resync').style.display = '';
-      document.getElementById('card-ships').style.display  = '';
-    }
   } else {
     showLogin();
   }
@@ -770,7 +761,7 @@ async function doScan() {
 }
 
 async function doResync() {
-  startSSE();
+  if (!_es || _es.readyState === EventSource.CLOSED) startSSE();
   const r = await post('/api/resync');
   if (!r.ok) {
     stopSSE();
