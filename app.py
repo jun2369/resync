@@ -727,17 +727,13 @@ def _scan_worker(s: dict):
 
             # All shipments on this page — verify in parallel (ignore stale failedCnt cache)
             candidates = []
-            _logged_keys = False
             for item in (resp.get("data") or []):
                 sid = str(item.get("shipmentId") or "").strip()
                 sn  = (item.get("shipmentNumber") or "").strip()
                 if sid and sn and sn not in existing_sns:
-                    if not _logged_keys:
-                        print(f"[DEBUG globalSearch keys] {list(item.keys())}", flush=True)
-                        _logged_keys = True
-                    ca = (item.get("createdAt") or item.get("createTime") or
-                          item.get("created_at") or item.get("createDate") or "")
-                    candidates.append({"sn": sn, "sid": sid, "created_at": str(ca)})
+                    et = item.get("eventTime") or ""
+                    ca = et.replace("T", " ")[:19] if "T" in et else et
+                    candidates.append({"sn": sn, "sid": sid, "created_at": ca})
 
             if candidates and not s["stop"].is_set():
                 with ThreadPoolExecutor(max_workers=15) as pool:
