@@ -148,24 +148,35 @@ def _nimbus(token: str, path: str, payload: dict, timeout: int = 30) -> dict:
 def _check_permission(tok: str) -> str:
     """Return an error message if the token lacks replay permission, else empty string."""
     hdrs = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
-    # Check token validity via read endpoint
-    try:
-        r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
-                     json={"current": 1, "pageSize": 1}, timeout=10, headers=hdrs)
-        if r.status_code == 401:
-            return "Token 已过期或无效，请重新登录"
-        if r.status_code == 403:
-            return "该账号没有 Nimbus Admin 操作权限，请使用有管理员权限的账号登录"
-    except Exception:
-        pass
-    # Check replay (write) permission with a non-existent ID — 403 means no write access
-    try:
-        r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/replay",
-                     json={"id": 0}, timeout=10, headers=hdrs)
-        if r.status_code == 403:
-            return "该账号没有 ReSync 操作权限，请使用有管理员权限的账号登录"
-    except Exception:
-        pass
+    results: dict = {}
+
+    def _check_read():
+        try:
+            r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
+                         json={"current": 1, "pageSize": 1}, timeout=6, headers=hdrs)
+            results["read"] = r.status_code
+        except Exception:
+            results["read"] = None
+
+    def _check_write():
+        try:
+            r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/replay",
+                         json={"id": 0}, timeout=6, headers=hdrs)
+            results["write"] = r.status_code
+        except Exception:
+            results["write"] = None
+
+    t1 = threading.Thread(target=_check_read, daemon=True)
+    t2 = threading.Thread(target=_check_write, daemon=True)
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    if results.get("read") == 401:
+        return "Token 已过期或无效，请重新登录"
+    if results.get("read") == 403:
+        return "该账号没有 Nimbus Admin 操作权限，请使用有管理员权限的账号登录"
+    if results.get("write") == 403:
+        return "该账号没有 ReSync 操作权限，请使用有管理员权限的账号登录"
     return ""
 
 
@@ -266,37 +277,49 @@ def api_login():
     if not user or not pw:
         return jsonify({"ok": False, "error": "账号和密码不能为空"}), 400
 
-    # Primary login endpoint (confirmed from KPI dashboard project)
     LOGIN_ATTEMPTS = [
         ("https://nimbusgroup.us",       "/api/v2/userauth/auth/sign-in", {"email": user, "password": pw}),
         ("https://admin.nimbusgroup.us", "/api/v2/userauth/auth/sign-in", {"email": user, "password": pw}),
         ("https://admin.nimbusgroup.us", "/api/v2/userauth/auth/login",   {"email": user, "password": pw}),
         ("https://admin.nimbusgroup.us", "/api/admin/auth/login",         {"username": user, "password": pw}),
     ]
-    for base, path, body in LOGIN_ATTEMPTS:
+
+    token_found: list = []   # [tok] once any attempt succeeds
+
+    def _try_login(base, path, body):
         try:
-            r = req.post(f"{base}{path}", json=body, timeout=10,
+            r = req.post(f"{base}{path}", json=body, timeout=6,
                          headers={"Content-Type": "application/json"})
             if r.ok:
                 d   = r.json()
                 tok = ((d.get("data") or {}).get("token") or
                        d.get("token") or d.get("access_token"))
-                if tok:
-                    # Verify the account has replay permission
-                    perm_err = _check_permission(tok)
-                    if perm_err:
-                        return jsonify({"ok": False, "error": perm_err}), 403
-                    s["token"]    = tok
-                    s["username"] = user
-                    s["_perm_ok"] = True
-                    session["_tok"] = tok
-                    session["_usr"] = user
-                    _log(s, f"登录成功：{user}", "success")
-                    return jsonify({"ok": True, "username": user})
+                if tok and not token_found:
+                    token_found.append(tok)
         except Exception:
             pass
 
-    return jsonify({"ok": False, "error": "账号或密码错误，请重试"}), 401
+    threads = [threading.Thread(target=_try_login, args=(b, p, bd), daemon=True)
+               for b, p, bd in LOGIN_ATTEMPTS]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    if not token_found:
+        return jsonify({"ok": False, "error": "账号或密码错误，请重试"}), 401
+
+    tok = token_found[0]
+    perm_err = _check_permission(tok)
+    if perm_err:
+        return jsonify({"ok": False, "error": perm_err}), 403
+    s["token"]    = tok
+    s["username"] = user
+    s["_perm_ok"] = True
+    session["_tok"] = tok
+    session["_usr"] = user
+    _log(s, f"登录成功：{user}", "success")
+    return jsonify({"ok": True, "username": user})
 
 
 @app.route("/api/token", methods=["POST"])
