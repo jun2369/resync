@@ -777,7 +777,6 @@ def _scan_worker(s: dict):
 
     except PermissionError as exc:
         s["token"] = None
-        _log(s, f"🔑 {exc}", "error")
         _bc(s, {"type": "need_login"})
         _push_status(s, "idle")
     except Exception as exc:
@@ -804,7 +803,6 @@ def _resync_one_ship_standalone(s: dict, ship: dict):
     except PermissionError as exc:
         s["ship_stops"].pop(sn, None)
         s["token"] = None
-        _log(s, f"🔑 {exc}", "error")
         _bc(s, {"type": "need_login"})
         _push_ship(s, sn, ship["failed"], "error", 0, 0)
         _push_status(s, "idle")
@@ -877,7 +875,6 @@ def _resync_worker(s: dict):
             })
     except PermissionError as exc:
         s["token"] = None
-        _log(s, f"🔑 {exc}", "error")
         _bc(s, {"type": "need_login"})
         _push_status(s, "idle")
         _bc(s, {"type": "done"})
