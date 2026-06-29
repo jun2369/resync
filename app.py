@@ -776,7 +776,9 @@ def _scan_worker(s: dict):
         _bc(s, {"type": "scan_done", "count": len(found)})
 
     except PermissionError as exc:
+        s["token"] = None
         _log(s, f"🔑 {exc}", "error")
+        _bc(s, {"type": "need_login"})
         _push_status(s, "idle")
     except Exception as exc:
         _log(s, f"扫描出错: {exc}", "error")
@@ -801,7 +803,9 @@ def _resync_one_ship_standalone(s: dict, ship: dict):
             ok, fail, errs = _resync_one_ship(s, token, sn, sid, ship["failed"], w, stop_ev)
     except PermissionError as exc:
         s["ship_stops"].pop(sn, None)
+        s["token"] = None
         _log(s, f"🔑 {exc}", "error")
+        _bc(s, {"type": "need_login"})
         _push_ship(s, sn, ship["failed"], "error", 0, 0)
         _push_status(s, "idle")
         return
@@ -872,7 +876,9 @@ def _resync_worker(s: dict):
                 "state": state,
             })
     except PermissionError as exc:
+        s["token"] = None
         _log(s, f"🔑 {exc}", "error")
+        _bc(s, {"type": "need_login"})
         _push_status(s, "idle")
         _bc(s, {"type": "done"})
         return

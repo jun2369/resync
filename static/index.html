@@ -356,6 +356,7 @@ function startSSE() {
   _es.onmessage = e => {
     const ev = JSON.parse(e.data);
     if (ev.type === 'ping')          return;
+    if (ev.type === 'need_login')    { showLogin(); return; }
     if (ev.type === 'status')        applyStatus(ev.value);
     if (ev.type === 'ship')          upsertRow(ev);
     if (ev.type === 'stat')          applyStats(ev);
