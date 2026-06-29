@@ -142,6 +142,8 @@ def _nimbus(token: str, path: str, payload: dict, timeout: int = 30) -> dict:
             "Referer":       f"{BASE}/shipment-sync/shipment-sync",
         },
     )
+    if r.status_code == 401:
+        raise PermissionError("Token 已过期，请重新登录")
     r.raise_for_status()
     return r.json()
 
@@ -773,6 +775,9 @@ def _scan_worker(s: dict):
         _push_status(s, "scanned")
         _bc(s, {"type": "scan_done", "count": len(found)})
 
+    except PermissionError as exc:
+        _log(s, f"🔑 {exc}", "error")
+        _push_status(s, "idle")
     except Exception as exc:
         _log(s, f"扫描出错: {exc}", "error")
         _push_status(s, "error")
@@ -788,11 +793,18 @@ def _resync_one_ship_standalone(s: dict, ship: dict):
     _push_ship(s, sn, ship["failed"], "running", 0, ship["failed"])
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = Path("logs") / f"results_{sn}_{ts}.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow(["timestamp", "shipment_number", "event_id",
-                    "operate_action", "result", "message"])
-        ok, fail, errs = _resync_one_ship(s, token, sn, sid, ship["failed"], w, stop_ev)
+    try:
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["timestamp", "shipment_number", "event_id",
+                        "operate_action", "result", "message"])
+            ok, fail, errs = _resync_one_ship(s, token, sn, sid, ship["failed"], w, stop_ev)
+    except PermissionError as exc:
+        s["ship_stops"].pop(sn, None)
+        _log(s, f"🔑 {exc}", "error")
+        _push_ship(s, sn, ship["failed"], "error", 0, 0)
+        _push_status(s, "idle")
+        return
     cancelled = stop_ev.is_set()
     s["ship_stops"].pop(sn, None)
     if cancelled:
@@ -825,7 +837,8 @@ def _resync_worker(s: dict):
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = Path("logs") / f"results_{ts}.csv"
 
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+    try:
+      with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["timestamp", "shipment_number", "event_id",
                     "operate_action", "result", "message"])
@@ -858,11 +871,17 @@ def _resync_worker(s: dict):
                 "fail":  fail,
                 "state": state,
             })
+    except PermissionError as exc:
+        _log(s, f"🔑 {exc}", "error")
+        _push_status(s, "idle")
+        _bc(s, {"type": "done"})
+        return
 
-    _log(s,
-         f"全部完成 ✓  ReSync 成功: {s['stats']['ok']}  失败: {s['stats']['fail']}  "
-         f"结果已保存: {csv_path}",
-         "success")
+    if not s["stop"].is_set():
+        _log(s,
+             f"全部完成 ✓  ReSync 成功: {s['stats']['ok']}  失败: {s['stats']['fail']}  "
+             f"结果已保存: {csv_path}",
+             "success")
     _push_status(s, "done")
     _bc(s, {"type": "done"})
 
@@ -900,6 +919,8 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, failed: int, w,
                            "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
                            {"shipmentId": sid, "operationResult": "ERROR",
                             "current": last_page, "pageSize": PAGE_SIZE})
+        except PermissionError:
+            raise
         except Exception as exc:
             _log(s, f"{sn} 获取事件失败: {exc}", "error")
             break
@@ -966,6 +987,8 @@ def _replay(token: str, ev_num: int) -> tuple:
         if msg and "success" in msg.lower() and "replay" in msg.lower():
             return True, msg
         return (resp.get("success") is True or resp.get("code") == 0), msg
+    except PermissionError:
+        raise
     except Exception as exc:
         return False, str(exc)
 
