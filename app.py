@@ -564,14 +564,15 @@ def _find_error_raw(ev: dict) -> str:
                 vv = obj.get(field)
                 if isinstance(vv, str) and len(vv) > 8:
                     return vv
-    # 3. Any top-level string that looks like an HTTP error
+    # 3. Any top-level string that looks like an HTTP/service call error
     for v in ev.values():
         if not isinstance(v, str) or len(v) < 20:
             continue
         vl = v.lower()
-        if any(kw in vl for kw in ("[500]", "[400]", "[post]", "[get]",
-                                    "exception", "internal server", "timeout",
-                                    "connection refused")):
+        if ("http://" in vl or "https://" in vl or
+                any(kw in vl for kw in ("[500]", "[400]", "[post]", "[get]",
+                                         "exception", "internal server", "timeout",
+                                         "timed out", "connection refused"))):
             return v
     return ""
 
