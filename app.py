@@ -692,6 +692,171 @@ def api_ship_reasons():
     return jsonify({"ok": True, "summary": summary})
 
 
+# ── SN info cache (clientName / branchCode) ──────────────────────────────────
+_SN_CACHE_FILE = Path("logs") / "sn_info_cache.json"
+_sn_cache: dict = {}          # sn -> {"clientName": str, "branchCode": str}
+_sn_cache_lock = threading.Lock()
+
+def _load_sn_cache():
+    if _SN_CACHE_FILE.exists():
+        try:
+            with open(_SN_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # keep entries that have at least created_at or clientName
+            _sn_cache.update({k: v for k, v in data.items()
+                               if v.get("clientName") or v.get("created_at")})
+        except Exception:
+            pass
+
+_load_sn_cache()
+
+def _save_sn_cache():
+    try:
+        with _sn_cache_lock:
+            data = dict(_sn_cache)
+        with open(_SN_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _get_basic_info(token: str, sn: str) -> dict:
+    try:
+        r = req.get(
+            f"{BASE}/api/admin/operate/shipment-basic/getShipmentBasicInfo",
+            params={"shipmentNumber": sn},
+            timeout=10,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/plain, */*",
+                "Referer": f"{BASE}/shipment/basic-info",
+            }
+        )
+        if r.ok:
+            d = r.json().get("data") or {}
+            return {
+                "clientName": d.get("clientName") or "",
+                "branchCode": d.get("branchCode") or "",
+            }
+    except Exception:
+        pass
+    return {"clientName": "", "branchCode": ""}
+
+
+@app.route("/api/dashboard_data")
+def api_dashboard_data():
+    s = _sess()
+    if not s.get("token"):
+        return jsonify({"ok": False, "error": "未登录"}), 401
+    token = s["token"]
+
+    # 3-month cutoff
+    now = datetime.now()
+    m, y = now.month - 2, now.year
+    if m <= 0:
+        m += 12
+        y -= 1
+    cutoff = f"{y:04d}-{m:02d}-01"
+
+    changed = False
+    try:
+        page = 1
+        total_pages = 9999
+        while page <= total_pages:
+            resp = _nimbus(token,
+                           "/api/admin/operate/tenant-sync/shipment-event/globalSearch",
+                           {"current": page, "pageSize": 50})
+            if not resp.get("success"):
+                break
+            total_pages = resp.get("totalPages") or 1
+            items = resp.get("data") or []
+            if not items:
+                break
+
+            page_has_new = False
+            for item in items:
+                sn = (item.get("shipmentNumber") or "").strip()
+                et = item.get("eventTime") or ""
+                ca = et.replace("T", " ")[:19] if "T" in et else et
+                if not sn:
+                    continue
+                with _sn_cache_lock:
+                    entry = _sn_cache.get(sn)
+                    if entry is None:
+                        # Brand new SN
+                        _sn_cache[sn] = {"clientName": "", "branchCode": "", "created_at": ca}
+                        changed = True
+                        page_has_new = True
+                    elif not entry.get("created_at"):
+                        # Old cache entry missing created_at (pre-migration format)
+                        _sn_cache[sn]["created_at"] = ca
+                        changed = True
+                        page_has_new = True
+                    # else: fully known (has created_at) — skip
+
+            # globalSearch returns newest-first: once a full page is all known, stop
+            if not page_has_new:
+                break
+
+            page += 1
+
+    except PermissionError:
+        return jsonify({"ok": False, "error": "token_expired"}), 401
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    # Fetch clientName/branchCode for SNs missing it within 3-month window
+    with _sn_cache_lock:
+        need_info = [sn for sn, v in _sn_cache.items()
+                     if not v.get("clientName") and (v.get("created_at") or "") >= cutoff]
+
+    if need_info:
+        def _fetch_sn(sn):
+            info = _get_basic_info(token, sn)
+            if info.get("clientName"):
+                with _sn_cache_lock:
+                    if sn in _sn_cache:
+                        _sn_cache[sn]["clientName"] = info["clientName"]
+                        _sn_cache[sn]["branchCode"] = info["branchCode"]
+                return True
+            return False
+
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            fetched = list(pool.map(_fetch_sn, need_info))
+        if any(fetched):
+            changed = True
+
+    # Clean entries older than 3-month cutoff
+    with _sn_cache_lock:
+        stale = [sn for sn, v in _sn_cache.items()
+                 if v.get("created_at") and v["created_at"] < cutoff]
+        if stale:
+            for sn in stale:
+                del _sn_cache[sn]
+            changed = True
+
+    if changed:
+        _save_sn_cache()
+
+    # Return 3-month data directly from cache (no re-fetch needed)
+    with _sn_cache_lock:
+        cache_snap = dict(_sn_cache)
+
+    result = [
+        {
+            "sn":         sn,
+            "created_at": v["created_at"],
+            "clientName": v.get("clientName", ""),
+            "branchCode": v.get("branchCode", ""),
+        }
+        for sn, v in cache_snap.items()
+        if v.get("created_at") and v["created_at"] >= cutoff
+    ]
+    result.sort(key=lambda x: x["created_at"], reverse=True)
+
+    return jsonify({"ok": True, "data": result})
+
+
 @app.route("/api/logs")
 def api_logs():
     s = _sess()
@@ -708,6 +873,7 @@ def _scan_worker(s: dict):
     # Start with any manually-added ships already in the list
     found = list(s["ships"])
     existing_sns = {sh["sn"] for sh in found}
+    all_ca: list = []   # all shipments scanned (for dashboard stats)
 
     try:
         page = 1
@@ -736,6 +902,7 @@ def _scan_worker(s: dict):
                     et = item.get("eventTime") or ""
                     ca = et.replace("T", " ")[:19] if "T" in et else et
                     candidates.append({"sn": sn, "sid": sid, "created_at": ca})
+                    all_ca.append({"sn": sn, "created_at": ca})
 
             if candidates and not s["stop"].is_set():
                 with ThreadPoolExecutor(max_workers=15) as pool:
@@ -773,6 +940,7 @@ def _scan_worker(s: dict):
             _log(s, "扫描完成：未发现 HAWB 失败的 Shipment ✓", "success")
 
         _push_status(s, "scanned")
+        _bc(s, {"type": "all_ships_ca", "data": all_ca})
         _bc(s, {"type": "scan_done", "count": len(found)})
 
     except PermissionError as exc:

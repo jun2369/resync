@@ -159,6 +159,9 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     <button class="g-tab" id="tab-logs" onclick="showPage('logs')">
       <i class="bi bi-journal-text me-1"></i>操作日志
     </button>
+    <button class="g-tab" id="tab-dash" onclick="showPage('dash')">
+      <i class="bi bi-bar-chart me-1"></i>面板
+    </button>
   </div>
 
   <!-- ── Page: Main ── -->
@@ -295,6 +298,48 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     </div>
   </div><!-- /page-logs -->
 
+  <!-- ── Page: Dashboard ── -->
+  <div id="page-dash" style="display:none">
+
+    <!-- Auto-refresh indicator + export -->
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <button class="g-btn g-btn-ghost" style="padding:5px 14px;font-size:.82rem" onclick="exportDashboard()">
+        <i class="bi bi-download me-1"></i>导出
+      </button>
+      <div style="font-size:.8rem;color:var(--muted)">
+        <i class="bi bi-arrow-clockwise me-1"></i>
+        下次自动刷新：<span id="dash-countdown" style="font-family:monospace;margin-left:4px;color:var(--text)">—</span>
+      </div>
+    </div>
+
+    <!-- Month summary cards -->
+    <div class="row g-3 mb-3" id="dash-months"></div>
+
+    <!-- Client & Branch breakdown (shown when a month is selected, collapsible) -->
+    <div id="dash-breakdown" class="g-card mb-3" style="display:none">
+      <div onclick="toggleDashBreakdown()" style="padding:12px 16px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;user-select:none;border-bottom:1px solid var(--border)">
+        <span style="font-weight:600;font-size:.88rem">Client &amp; Branch 分布</span>
+        <i class="bi bi-chevron-up" id="dash-bd-chevron" style="color:var(--muted)"></i>
+      </div>
+      <div id="dash-breakdown-body" class="p-3">
+        <div class="row g-3">
+          <div class="col-md-6" id="dash-clients"></div>
+          <div class="col-md-6" id="dash-branches"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Daily bar chart -->
+    <div class="g-card" id="dash-daily-wrap">
+      <div onclick="toggleDashDaily()" style="padding:12px 16px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;user-select:none;border-bottom:1px solid var(--border)">
+        <span style="font-weight:600;font-size:.88rem">每日创建数量</span>
+        <i class="bi bi-chevron-up" id="dash-daily-chevron" style="color:var(--muted)"></i>
+      </div>
+      <div id="dash-daily" class="p-4"></div>
+    </div>
+
+  </div><!-- /page-dash -->
+
 </div><!-- /view-app -->
 
 <!-- ── LOADING OVERLAY ─────────────────────────────────────────────────────── -->
@@ -312,6 +357,22 @@ let _stats     = {found:0, ok:0, fail:0, total_ev:0, done_ev:0};
 let _status    = "idle";
 let _es        = null;
 const _reasons = {};   // sn -> 'loading' | summary[] | null
+let _allShipsCa = [];        // all scanned shipments {sn, created_at} for dashboard
+let _dashSelectedMonth = null; // e.g. '2026-06', null = show all
+
+const _DASH_CACHE_KEY = 'dash_ca_v2';
+function _loadDashCache() {
+  try {
+    const raw = localStorage.getItem(_DASH_CACHE_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (obj && Array.isArray(obj.data) && obj.data.length > 0) _allShipsCa = obj.data;
+  } catch(e) {}
+}
+function _saveDashCache(data) {
+  try { localStorage.setItem(_DASH_CACHE_KEY, JSON.stringify({data})); } catch(e) {}
+}
+_loadDashCache();
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -344,6 +405,7 @@ function showApp() {
   document.getElementById('view-login').style.display = 'none';
   document.getElementById('view-app').style.display   = 'block';
   document.getElementById('s-user').textContent = _username;
+  startDashAutoRefresh();
 }
 
 // ── SSE ───────────────────────────────────────────────────────────────────────
@@ -361,6 +423,7 @@ function startSSE() {
     if (ev.type === 'ship')          upsertRow(ev);
     if (ev.type === 'stat')          applyStats(ev);
     if (ev.type === 'scan_progress') onScanProgress(ev);
+    if (ev.type === 'all_ships_ca')  { _allShipsCa = ev.data || []; }
     if (ev.type === 'scan_done')     onScanDone(ev.count);
     if (ev.type === 'done')          onDone();
   };
@@ -581,6 +644,7 @@ async function onScanDone(count) {
     document.getElementById('card-ships').style.display  = '';
   }
   applyStatus('scanned');
+  if (document.getElementById('page-dash').style.display !== 'none') fetchDashboardData();
   setTimeout(stopSSE, 800);
 }
 
@@ -675,9 +739,15 @@ function showErr(msg) {
 function showPage(name) {
   document.getElementById('page-main').style.display = name === 'main' ? '' : 'none';
   document.getElementById('page-logs').style.display = name === 'logs' ? '' : 'none';
+  document.getElementById('page-dash').style.display = name === 'dash' ? '' : 'none';
   document.getElementById('tab-main').classList.toggle('active', name === 'main');
   document.getElementById('tab-logs').classList.toggle('active', name === 'logs');
+  document.getElementById('tab-dash').classList.toggle('active', name === 'dash');
   if (name === 'logs') loadLogs();
+  if (name === 'dash') {
+    if (_allShipsCa.length === 0) fetchDashboardData();
+    else renderDashboard();
+  }
 }
 
 const LOG_STATE = {
@@ -713,11 +783,13 @@ async function loadLogs() {
 }
 
 async function doLogout() {
+  stopDashAutoRefresh();
   await post('/api/logout');
-  _loggedIn = false;
-  _username = '';
-  _ships    = {};
-  _stats    = {found:0,ok:0,fail:0,total_ev:0,done_ev:0};
+  _loggedIn    = false;
+  _username    = '';
+  _ships       = {};
+  _allShipsCa  = [];
+  _stats       = {found:0,ok:0,fail:0,total_ev:0,done_ev:0};
   for (const k in _reasons) delete _reasons[k];
   document.getElementById('ship-body').innerHTML = '';
   document.getElementById('card-resync').style.display = 'none';
@@ -741,6 +813,7 @@ async function doScan() {
     if (r.error && r.error.includes('登录')) { showLogin(); return; }
     alert(r.error || '扫描失败'); return;
   }
+  _allShipsCa = [];
   // Remove non-manual rows; keep manually-added ones
   for (const sn in _ships) {
     if (!_ships[sn].manual) {
@@ -849,6 +922,257 @@ async function doAddManual() {
 
 async function doStop() {
   await post('/api/stop');
+}
+
+// ── Dashboard auto-refresh ────────────────────────────────────────────────────
+let _dashNextRefresh  = null;
+let _dashRefreshTimer = null;
+let _dashCountdownId  = null;
+
+function startDashAutoRefresh() {
+  stopDashAutoRefresh();
+  const saved = parseInt(localStorage.getItem('dash_next_refresh') || '0');
+  _dashNextRefresh = (saved > Date.now()) ? saved : Date.now() + 60 * 60 * 1000;
+  localStorage.setItem('dash_next_refresh', String(_dashNextRefresh));
+
+  // Single interval: countdown tick + refresh check
+  _dashCountdownId = setInterval(() => {
+    if (Date.now() >= _dashNextRefresh) {
+      fetchDashboardData(true);
+      _dashNextRefresh = Date.now() + 60 * 60 * 1000;
+      localStorage.setItem('dash_next_refresh', String(_dashNextRefresh));
+    }
+    _tickDashCountdown();
+  }, 1000);
+  _tickDashCountdown();
+}
+
+function stopDashAutoRefresh() {
+  if (_dashRefreshTimer) { clearInterval(_dashRefreshTimer); _dashRefreshTimer = null; }
+  if (_dashCountdownId)  { clearInterval(_dashCountdownId);  _dashCountdownId  = null; }
+  _dashNextRefresh = null;
+}
+
+function _tickDashCountdown() {
+  const el = document.getElementById('dash-countdown');
+  if (!el || !_dashNextRefresh) return;
+  const diff = Math.max(0, _dashNextRefresh - Date.now());
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  el.textContent = (h ? h + ':' : '') +
+    String(m).padStart(h ? 2 : 1, '0') + ':' + String(s).padStart(2, '0');
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function exportDashboard() {
+  if (!_allShipsCa.length) { alert('暂无数据，请稍候面板加载完成后再导出'); return; }
+
+  // 3-month window
+  const now = new Date();
+  let y = now.getFullYear(), mo = now.getMonth() - 2;
+  if (mo < 0) { mo += 12; y--; }
+  const windowStart = `${y}-${String(mo + 1).padStart(2, '0')}-01`;
+
+  let rows = _allShipsCa.filter(s => (s.created_at || '') >= windowStart);
+  if (_dashSelectedMonth) rows = rows.filter(s => (s.created_at || '').startsWith(_dashSelectedMonth));
+  if (!rows.length) { alert('当前筛选范围内暂无数据'); return; }
+
+  const header = ['Shipment Number', 'Created At', 'Client Name', 'Branch Code'];
+  const csv = [header, ...rows.map(s => [s.sn, s.created_at || '', s.clientName || '', s.branchCode || ''])]
+    .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+
+  const blob = new Blob(['﻿' + csv], {type: 'text/csv;charset=utf-8'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `dashboard_${_dashSelectedMonth || 'all'}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function toggleDashBreakdown() {
+  const body    = document.getElementById('dash-breakdown-body');
+  const chevron = document.getElementById('dash-bd-chevron');
+  const hidden  = body.style.display === 'none';
+  body.style.display    = hidden ? '' : 'none';
+  chevron.className     = hidden ? 'bi bi-chevron-up' : 'bi bi-chevron-down';
+}
+
+function toggleDashDaily() {
+  const body    = document.getElementById('dash-daily');
+  const chevron = document.getElementById('dash-daily-chevron');
+  const hidden  = body.style.display === 'none';
+  body.style.display    = hidden ? '' : 'none';
+  chevron.className     = hidden ? 'bi bi-chevron-up' : 'bi bi-chevron-down';
+}
+
+function selectDashMonth(key) {
+  _dashSelectedMonth = _dashSelectedMonth === key ? null : key;
+  renderDashboard();
+}
+
+async function fetchDashboardData(silent = false) {
+  if (!silent) {
+    document.getElementById('dash-months').innerHTML =
+      '<div class="col-12" style="color:var(--muted);font-size:.88rem;padding:8px 0">加载中…</div>';
+    document.getElementById('dash-peak').innerHTML  = '';
+    document.getElementById('dash-daily').innerHTML = '';
+  }
+  try {
+    const r = await fetch('/api/dashboard_data').then(res => res.json());
+    if (r.ok && r.data) {
+      _allShipsCa = r.data;
+      _saveDashCache(r.data);
+    } else if (r.error === 'token_expired') {
+      showLogin(); return;
+    }
+  } catch(e) { /* keep existing _allShipsCa */ }
+  renderDashboard();
+}
+
+function renderDashboard() {
+  const ships = _allShipsCa;
+
+  // 3-month window: current month + prior 2 months
+  const now = new Date();
+  const months = [];
+  for (let i = 2; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      year:  d.getFullYear(),
+      month: d.getMonth(),   // 0-indexed
+      key:   d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'),
+      label: d.getFullYear() + '年' + (d.getMonth() + 1) + '月',
+    });
+  }
+
+  const windowStart = new Date(months[0].year, months[0].month, 1);
+
+  // Group by day (only within window)
+  const dayMap = {};
+  for (const ship of ships) {
+    const ca = ship.created_at;
+    if (!ca) continue;
+    const dateStr = ca.slice(0, 10);
+    if (new Date(dateStr) >= windowStart) {
+      dayMap[dateStr] = (dayMap[dateStr] || 0) + 1;
+    }
+  }
+
+  // Group by month
+  const monthCounts = {};
+  for (const m of months) monthCounts[m.key] = 0;
+  for (const [day, cnt] of Object.entries(dayMap)) {
+    const mk = day.slice(0, 7);
+    if (mk in monthCounts) monthCounts[mk] += cnt;
+  }
+
+  // Peak day
+  let peakDay = null, peakCount = 0;
+  for (const [day, cnt] of Object.entries(dayMap)) {
+    if (cnt > peakCount) { peakCount = cnt; peakDay = day; }
+  }
+
+  const noData = Object.keys(dayMap).length === 0;
+
+  // Month cards
+  document.getElementById('dash-months').innerHTML = months.map(m => {
+    const cnt      = monthCounts[m.key] || 0;
+    const selected = _dashSelectedMonth === m.key;
+    return `<div class="col-4">
+      <div class="g-card p-3 text-center" onclick="selectDashMonth('${m.key}')"
+        style="cursor:pointer;transition:border-color .15s;border-color:${selected ? 'var(--accent)' : 'var(--border)'}">
+        <div style="font-size:.8rem;color:${selected ? 'var(--accent)' : 'var(--muted)'};margin-bottom:8px">${m.label}</div>
+        <div style="font-size:2rem;font-weight:700;color:var(--accent)">${cnt}</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:4px">Created Shipments</div>
+      </div>
+    </div>`;
+  }).join('');
+
+
+  // Daily bar chart
+  const dailyEl = document.getElementById('dash-daily');
+  if (noData) {
+    dailyEl.innerHTML = `<div style="color:var(--muted);font-size:.88rem;text-align:center;padding:16px">暂无数据，请先执行扫描</div>`;
+    return;
+  }
+  const allSortedDays = Object.entries(dayMap).sort(([a], [b]) => a.localeCompare(b));
+  const sortedDays = _dashSelectedMonth
+    ? allSortedDays.filter(([d]) => d.startsWith(_dashSelectedMonth))
+    : allSortedDays;
+  const maxCnt = Math.max(...sortedDays.map(([, c]) => c), 1);
+
+  // Peak day within the currently displayed range (for bar chart highlight)
+  let chartPeakDay = null, chartPeakCount = 0;
+  for (const [day, cnt] of sortedDays) {
+    if (cnt > chartPeakCount) { chartPeakCount = cnt; chartPeakDay = day; }
+  }
+  dailyEl.innerHTML = `
+    ${sortedDays.map(([day, cnt]) => {
+      const pct  = Math.round(cnt / maxCnt * 100);
+      const peak = day === chartPeakDay;
+      return `<div class="d-flex align-items-center gap-2 mb-2" style="font-size:.82rem">
+        <span style="width:96px;color:var(--muted);flex-shrink:0;font-family:monospace">${day}</span>
+        <div style="flex:1;background:#21262d;border-radius:4px;height:16px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${peak ? 'var(--yellow)' : 'var(--accent)'};border-radius:4px;transition:width .4s"></div>
+        </div>
+        <span style="width:28px;text-align:right;font-weight:${peak ? 700 : 400};color:${peak ? 'var(--yellow)' : 'var(--text)'}">${cnt}</span>
+      </div>`;
+    }).join('')}`;
+
+  // Client & Branch breakdown — only when a month is selected
+  const breakdownEl = document.getElementById('dash-breakdown');
+  if (_dashSelectedMonth) {
+    breakdownEl.style.display = '';
+    const mShips = ships.filter(s => (s.created_at || '').startsWith(_dashSelectedMonth));
+    const hasInfo = mShips.some(s => s.clientName || s.branchCode);
+
+    function _barList(entries, color, labelWidth) {
+      if (!entries.length) return '<div style="color:var(--muted);font-size:.85rem">暂无数据</div>';
+      const mx = Math.max(...entries.map(([,c]) => c), 1);
+      const labelStyle = labelWidth
+        ? `width:${labelWidth};flex-shrink:0;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis`
+        : `flex:1;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
+      return entries.map(([label, cnt]) => {
+        const pct = Math.round(cnt / mx * 100);
+        return `<div class="d-flex align-items-center gap-2 mb-2" style="font-size:.82rem">
+          <span style="${labelStyle}" title="${label}">${label}</span>
+          <div style="flex:1;background:#21262d;border-radius:4px;height:14px;overflow:hidden;flex-shrink:0">
+            <div style="height:100%;width:${pct}%;background:${color};border-radius:4px"></div>
+          </div>
+          <span style="width:28px;text-align:right;color:var(--text);flex-shrink:0">${cnt}</span>
+        </div>`;
+      }).join('');
+    }
+
+    if (!hasInfo) {
+      document.getElementById('dash-clients').innerHTML  =
+        '<div style="color:var(--muted);font-size:.85rem">详细数据加载中，请稍候后重试…</div>';
+      document.getElementById('dash-branches').innerHTML =
+        '<div style="color:var(--muted);font-size:.85rem">详细数据加载中，请稍候后重试…</div>';
+    } else {
+      const clientMap = {}, branchMap = {};
+      for (const s of mShips) {
+        const cn = s.clientName || '(Unknown)';
+        clientMap[cn] = (clientMap[cn] || 0) + 1;
+        const bc = s.branchCode || '(Unknown)';
+        branchMap[bc] = (branchMap[bc] || 0) + 1;
+      }
+      const cEntries = Object.entries(clientMap).sort(([,a],[,b]) => b - a);
+      const bEntries = Object.entries(branchMap).sort(([,a],[,b]) => b - a);
+
+      document.getElementById('dash-clients').innerHTML =
+        `<div style="font-weight:600;font-size:.88rem;margin-bottom:14px">By Client</div>` +
+        _barList(cEntries, 'var(--accent)');
+      document.getElementById('dash-branches').innerHTML =
+        `<div style="font-weight:600;font-size:.88rem;margin-bottom:14px">By Branch</div>` +
+        _barList(bEntries, 'var(--green)', '56px');
+    }
+  } else {
+    breakdownEl.style.display = 'none';
+  }
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
