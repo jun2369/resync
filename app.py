@@ -774,12 +774,18 @@ def api_dashboard_data():
                 break
 
             page_has_new = False
+            hit_cutoff = False
             for item in items:
                 sn = (item.get("shipmentNumber") or "").strip()
                 et = item.get("eventTime") or ""
                 ca = et.replace("T", " ")[:19] if "T" in et else et
                 if not sn:
                     continue
+                if ca and ca < cutoff:
+                    # globalSearch returns newest-first: once we're past the
+                    # dashboard's 3-month window, everything after is older still
+                    hit_cutoff = True
+                    break
                 with _sn_cache_lock:
                     entry = _sn_cache.get(sn)
                     if entry is None:
@@ -794,8 +800,8 @@ def api_dashboard_data():
                         page_has_new = True
                     # else: fully known (has created_at) — skip
 
-            # globalSearch returns newest-first: once a full page is all known, stop
-            if not page_has_new:
+            # Stop once a full page is all known, or we've paged past the window
+            if hit_cutoff or not page_has_new:
                 break
 
             page += 1
