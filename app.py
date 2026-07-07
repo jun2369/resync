@@ -658,7 +658,7 @@ def api_ship_reasons():
             for ev in events:
                 action    = (ev.get("operateAction") or "unknown").strip()
                 raw_err   = _find_error_raw(ev)
-                short_err = _extract_error_key(raw_err)
+                short_err = raw_err.strip()[:500]
                 ctx       = _extract_context(ev)
                 if action not in groups:
                     groups[action] = {"count": 0, "err_counts": {}, "ctx_counts": {}}
