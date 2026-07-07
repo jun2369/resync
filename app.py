@@ -735,12 +735,15 @@ def _get_basic_info(token: str, sn: str) -> dict:
         )
         if r.ok:
             d = r.json().get("data") or {}
+            if not d.get("clientName"):
+                print(f"[dash-info] {sn}: HTTP {r.status_code} but no clientName in response data={d}", flush=True)
             return {
                 "clientName": d.get("clientName") or "",
                 "branchCode": d.get("branchCode") or "",
             }
-    except Exception:
-        pass
+        print(f"[dash-info] {sn}: HTTP {r.status_code} {r.text[:200]}", flush=True)
+    except Exception as exc:
+        print(f"[dash-info] {sn}: exception {exc!r}", flush=True)
     return {"clientName": "", "branchCode": ""}
 
 
@@ -860,10 +863,20 @@ def api_dashboard_data():
                         return True
                     return False
 
+                # Save every 50 completions (not just at the end) so a pod
+                # restart mid-backfill doesn't discard everything found so far.
+                done = 0
                 with ThreadPoolExecutor(max_workers=15) as pool:
-                    fetched = list(pool.map(_fetch_sn, sns))
-                if any(fetched):
-                    _save_sn_cache()
+                    futures = [pool.submit(_fetch_sn, sn) for sn in sns]
+                    for fut in as_completed(futures):
+                        try:
+                            fut.result()
+                        except Exception:
+                            pass
+                        done += 1
+                        if done % 50 == 0:
+                            _save_sn_cache()
+                _save_sn_cache()
             finally:
                 _dash_backfill_lock.release()
 
