@@ -734,7 +734,13 @@ def _get_basic_info(token: str, sn: str) -> dict:
             }
         )
         if r.ok:
-            d = r.json().get("data") or {}
+            body = r.json()
+            if body.get("success") is False:
+                # Shipment doesn't exist in Nimbus's shipment-basic system at all
+                # (e.g. deleted / test data) — not just missing a client assignment.
+                print(f"[dash-info] {sn}: not found — {body.get('msg')}", flush=True)
+                return {"clientName": "", "branchCode": "", "not_found": True}
+            d = body.get("data") or {}
             if not d.get("clientName"):
                 print(f"[dash-info] {sn}: HTTP {r.status_code} but no clientName in response data={d}", flush=True)
             return {
@@ -833,6 +839,9 @@ def api_dashboard_data():
     with _sn_cache_lock:
         cache_snap = dict(_sn_cache)
 
+    # SNs confirmed not to exist in Nimbus's shipment-basic system (deleted /
+    # test data) are excluded entirely — not counted in monthly/daily totals
+    # or the client/branch breakdown.
     result = [
         {
             "sn":         sn,
@@ -841,20 +850,26 @@ def api_dashboard_data():
             "branchCode": v.get("branchCode", ""),
         }
         for sn, v in cache_snap.items()
-        if v.get("created_at") and v["created_at"] >= cutoff
+        if v.get("created_at") and v["created_at"] >= cutoff and not v.get("not_found")
     ]
     result.sort(key=lambda x: x["created_at"], reverse=True)
 
     # Backfill clientName/branchCode for SNs missing it, in the background —
     # skip if a previous backfill is still running (e.g. hourly auto-refresh).
     need_info = [sn for sn, v in cache_snap.items()
-                 if not v.get("clientName") and (v.get("created_at") or "") >= cutoff]
+                 if not v.get("clientName") and not v.get("not_found")
+                 and (v.get("created_at") or "") >= cutoff]
 
     if need_info and _dash_backfill_lock.acquire(blocking=False):
         def _backfill_client_info(sns):
             try:
                 def _fetch_sn(sn):
                     info = _get_basic_info(token, sn)
+                    if info.get("not_found"):
+                        with _sn_cache_lock:
+                            if sn in _sn_cache:
+                                _sn_cache[sn]["not_found"] = True
+                        return True
                     if info.get("clientName"):
                         with _sn_cache_lock:
                             if sn in _sn_cache:
