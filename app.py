@@ -696,6 +696,7 @@ def api_ship_reasons():
 _SN_CACHE_FILE = Path("logs") / "sn_info_cache.json"
 _sn_cache: dict = {}          # sn -> {"clientName": str, "branchCode": str}
 _sn_cache_lock = threading.Lock()
+_dash_backfill_lock = threading.Lock()   # prevents overlapping background client-info backfills
 
 def _load_sn_cache():
     if _SN_CACHE_FILE.exists():
@@ -811,27 +812,6 @@ def api_dashboard_data():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
-    # Fetch clientName/branchCode for SNs missing it within 3-month window
-    with _sn_cache_lock:
-        need_info = [sn for sn, v in _sn_cache.items()
-                     if not v.get("clientName") and (v.get("created_at") or "") >= cutoff]
-
-    if need_info:
-        def _fetch_sn(sn):
-            info = _get_basic_info(token, sn)
-            if info.get("clientName"):
-                with _sn_cache_lock:
-                    if sn in _sn_cache:
-                        _sn_cache[sn]["clientName"] = info["clientName"]
-                        _sn_cache[sn]["branchCode"] = info["branchCode"]
-                return True
-            return False
-
-        with ThreadPoolExecutor(max_workers=20) as pool:
-            fetched = list(pool.map(_fetch_sn, need_info))
-        if any(fetched):
-            changed = True
-
     # Clean entries older than 3-month cutoff
     with _sn_cache_lock:
         stale = [sn for sn, v in _sn_cache.items()
@@ -844,7 +824,9 @@ def api_dashboard_data():
     if changed:
         _save_sn_cache()
 
-    # Return 3-month data directly from cache (no re-fetch needed)
+    # Return 3-month data directly from cache. The daily chart only needs
+    # created_at, so respond immediately instead of waiting on clientName/
+    # branchCode lookups below (those trickle in on later refreshes).
     with _sn_cache_lock:
         cache_snap = dict(_sn_cache)
 
@@ -859,6 +841,33 @@ def api_dashboard_data():
         if v.get("created_at") and v["created_at"] >= cutoff
     ]
     result.sort(key=lambda x: x["created_at"], reverse=True)
+
+    # Backfill clientName/branchCode for SNs missing it, in the background —
+    # skip if a previous backfill is still running (e.g. hourly auto-refresh).
+    need_info = [sn for sn, v in cache_snap.items()
+                 if not v.get("clientName") and (v.get("created_at") or "") >= cutoff]
+
+    if need_info and _dash_backfill_lock.acquire(blocking=False):
+        def _backfill_client_info(sns):
+            try:
+                def _fetch_sn(sn):
+                    info = _get_basic_info(token, sn)
+                    if info.get("clientName"):
+                        with _sn_cache_lock:
+                            if sn in _sn_cache:
+                                _sn_cache[sn]["clientName"] = info["clientName"]
+                                _sn_cache[sn]["branchCode"] = info["branchCode"]
+                        return True
+                    return False
+
+                with ThreadPoolExecutor(max_workers=15) as pool:
+                    fetched = list(pool.map(_fetch_sn, sns))
+                if any(fetched):
+                    _save_sn_cache()
+            finally:
+                _dash_backfill_lock.release()
+
+        threading.Thread(target=_backfill_client_info, args=(need_info,), daemon=True).start()
 
     return jsonify({"ok": True, "data": result})
 
