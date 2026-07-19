@@ -251,7 +251,18 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.9rem">
       失败 Shipment 列表
     </div>
-    <div style="overflow-x:auto">
+    <div class="d-flex gap-1" style="padding:8px 12px 0 12px">
+      <button class="g-tab active" id="ship-tab-hawb" onclick="showShipTab('hawb')" style="font-size:.82rem;padding:6px 14px">
+        HAWB Milestone <span id="ship-tab-hawb-count"></span>
+      </button>
+      <button class="g-tab" id="ship-tab-info" onclick="showShipTab('info')" style="font-size:.82rem;padding:6px 14px">
+        Shipment Info <span id="ship-tab-info-count"></span>
+      </button>
+      <button class="g-tab" id="ship-tab-mawb" onclick="showShipTab('mawb')" style="font-size:.82rem;padding:6px 14px">
+        MAWB Milestone <span id="ship-tab-mawb-count"></span>
+      </button>
+    </div>
+    <div id="ship-table-hawb" style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead>
           <tr style="background:#1c2128">
@@ -265,6 +276,38 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
           </tr>
         </thead>
         <tbody id="ship-body"></tbody>
+      </table>
+    </div>
+    <div id="ship-table-info" style="display:none;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:#1c2128">
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Shipment Number</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">Info Failed</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Created At</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">原因</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">状态</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">进度</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">操作</th>
+          </tr>
+        </thead>
+        <tbody id="ship-body-info"></tbody>
+      </table>
+    </div>
+    <div id="ship-table-mawb" style="display:none;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:#1c2128">
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Shipment Number</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">MAWB Failed</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Created At</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">原因</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">状态</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">进度</th>
+            <th style="padding:9px 14px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">操作</th>
+          </tr>
+        </thead>
+        <tbody id="ship-body-mawb"></tbody>
       </table>
     </div>
   </div>
@@ -376,6 +419,13 @@ function _saveDashCache(data) {
 }
 _loadDashCache();
 
+// Shipment Info / MAWB Milestone — new, isolated from the HAWB state above
+let _shipsInfo = {};   // sn -> {failed, state, done, total}
+let _shipsMawb = {};
+const _reasonsInfo = {};   // sn -> 'loading' | summary[] | null
+const _reasonsMawb = {};
+let _shipTab = 'hawb';   // 'hawb' | 'info' | 'mawb' — which sub-tab is active
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   const me = await fetch('/api/me').then(r=>r.json()).catch(()=>({logged_in:false}));
@@ -423,10 +473,13 @@ function startSSE() {
     if (ev.type === 'need_login')    { showLogin(); return; }
     if (ev.type === 'status')        applyStatus(ev.value);
     if (ev.type === 'ship')          upsertRow(ev);
+    if (ev.type === 'ship_info')     upsertRowInfo(ev);
+    if (ev.type === 'ship_mawb')     upsertRowMawb(ev);
     if (ev.type === 'stat')          applyStats(ev);
     if (ev.type === 'scan_progress') onScanProgress(ev);
-    if (ev.type === 'all_ships_ca')  { _allShipsCa = ev.data || []; }
-    if (ev.type === 'scan_done')     onScanDone(ev.count);
+    // NOTE: scan results no longer overwrite _allShipsCa — 面板 is fully
+    // decoupled from 扫描 and only ever gets data from fetchDashboardData().
+    if (ev.type === 'scan_done')     onScanDone(ev);
     if (ev.type === 'done')          onDone();
   };
   _es.onerror = () => { if (_es) setTimeout(startSSE, 3000); };
@@ -522,6 +575,48 @@ async function fetchReasons(sn) {
   _updateReasonsCell(sn);
 }
 
+// ── Shipment Info / MAWB Milestone reasons (new, shared between the two new types) ──
+function _reasonsHtmlFor(kind, sn) {
+  const store = kind === 'info' ? _reasonsInfo : _reasonsMawb;
+  const r = store[sn];
+  if (r === 'loading')
+    return '<span style="color:var(--muted);font-size:.75rem">分析中…</span>';
+  if (!r || r.length === 0)
+    return '<span style="color:var(--muted)">—</span>';
+  return r.map(g => {
+    const msgEl = g.msg
+      ? `<div style="font-size:.7rem;color:#f85149;font-family:monospace;max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px" title="${g.msg.replace(/"/g,'&quot;')}">${g.msg}</div>`
+      : '';
+    return `<div style="margin-bottom:5px">
+      <span style="font-size:.74rem;color:var(--muted)">${g.action}</span>
+      <span style="font-size:.74rem;color:var(--yellow);margin-left:4px">×${g.count}</span>
+      ${msgEl}
+    </div>`;
+  }).join('');
+}
+
+function _updateReasonsCellFor(kind, sn) {
+  const row = document.getElementById('row-' + kind + '-' + sn);
+  if (!row) return;
+  const cell = row.querySelector('.reasons-cell');
+  if (cell) cell.innerHTML = _reasonsHtmlFor(kind, sn);
+}
+
+async function fetchReasonsGeneric(kind, sn) {
+  const store = kind === 'info' ? _reasonsInfo : _reasonsMawb;
+  const url   = kind === 'info' ? '/api/ship_reasons_info' : '/api/ship_reasons_mawb';
+  if (store[sn] && store[sn] !== 'loading') return;
+  store[sn] = 'loading';
+  _updateReasonsCellFor(kind, sn);
+  try {
+    const r = await post(url, {sn});
+    store[sn] = (r.ok && r.summary && r.summary.length) ? r.summary : null;
+  } catch(e) {
+    store[sn] = null;
+  }
+  _updateReasonsCellFor(kind, sn);
+}
+
 // ── Shipment rows ─────────────────────────────────────────────────────────────
 const STATE_INFO = {
   found:     { badge:'g-badge-yellow', label:'待处理' },
@@ -606,16 +701,103 @@ function upsertRow(ev) {
   }
 }
 
+// ── Shipment Info / MAWB Milestone rows (new, isolated from upsertRow above) ──
+function _upsertShipRowGeneric(kind, ev) {
+  const store = kind === 'info' ? _shipsInfo : _shipsMawb;
+  store[ev.sn] = ev;
+  const tbody = document.getElementById(kind === 'info' ? 'ship-body-info' : 'ship-body-mawb');
+  const rowId = 'row-' + kind + '-' + ev.sn;
+  let   row   = document.getElementById(rowId);
+  const si    = STATE_INFO[ev.state] || STATE_INFO.found;
+
+  const progHtml = ev.total > 0
+    ? `<div class="g-prog-wrap" style="min-width:90px;margin:0 auto">
+         <div class="g-prog-bar" style="width:${Math.round(ev.done/ev.total*100)}%${ev.state==='running'?' transition:none':''}"></div>
+       </div>
+       <div style="font-size:.75rem;color:var(--muted);margin-top:2px">${ev.done}/${ev.total}</div>`
+    : '—';
+
+  const canResync = ['found','error','partial','cancelled'].includes(ev.state);
+  const resyncFn  = kind === 'info' ? 'doResyncOneInfo' : 'doResyncOneMawb';
+  const stopFn    = kind === 'info' ? 'doStopOneInfo'   : 'doStopOneMawb';
+  const btnHtml = ev.state === 'running'
+    ? `<button class="g-btn g-btn-danger" style="padding:4px 12px;font-size:.78rem"
+         onclick="${stopFn}('${ev.sn.replace(/'/g,"\\'")}')">
+         <i class="bi bi-stop-fill"></i>取消
+       </button>`
+    : canResync
+      ? `<button class="g-btn g-btn-ghost" style="padding:4px 12px;font-size:.78rem"
+           onclick="${resyncFn}('${ev.sn.replace(/'/g,"\\'")}')">
+           <i class="bi bi-arrow-repeat"></i>ReSync
+         </button>`
+      : `<span style="font-size:.78rem;color:var(--green)">✓</span>`;
+
+  const errHtml = (ev.errors && ev.errors.length > 0 && (ev.state === 'error' || ev.state === 'partial'))
+    ? `<tr id="err-${kind}-${ev.sn}" class="ship-row">
+         <td colspan="6" style="padding:4px 14px 10px 28px">
+           ${ev.errors.map(e => `<div style="font-size:.76rem;color:var(--red);font-family:monospace">⚠ ${e}</div>`).join('')}
+         </td>
+       </tr>`
+    : '';
+
+  const html = `
+    <td style="white-space:nowrap">
+      <span class="sn-mono">${ev.sn}</span>
+      <button onclick="navigator.clipboard.writeText('${ev.sn.replace(/'/g,"\\'")}').then(()=>{this.innerHTML='<i class=\\'bi bi-check\\'></i>';setTimeout(()=>{this.innerHTML='<i class=\\'bi bi-copy\\'></i>'},1200)})"
+        title="复制" style="background:none;border:none;cursor:pointer;color:var(--muted);padding:0 0 0 5px;font-size:.8rem;vertical-align:middle;opacity:.6"
+        onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.6">
+        <i class="bi bi-copy"></i>
+      </button>
+    </td>
+    <td style="text-align:center"><span class="g-badge g-badge-red">${ev.failed}</span></td>
+    <td style="font-size:.8rem;color:var(--muted);white-space:nowrap">${ev.created_at || '—'}</td>
+    <td class="reasons-cell" style="padding:6px 14px;min-width:170px;max-width:240px;vertical-align:top">${_reasonsHtmlFor(kind, ev.sn)}</td>
+    <td style="text-align:center"><span class="g-badge ${si.badge}">${si.label}</span></td>
+    <td style="text-align:center">${progHtml}</td>
+    <td style="text-align:center">${btnHtml}</td>`;
+
+  if (!row) {
+    row = document.createElement('tr');
+    row.id = rowId;
+    row.className = 'ship-row';
+    tbody.appendChild(row);
+  }
+  row.innerHTML = html;
+
+  const errKey = 'err-' + kind + '-' + ev.sn;
+  let errRow = document.getElementById(errKey);
+  if (errHtml) {
+    if (!errRow) {
+      errRow = document.createElement('tbody');
+      errRow.innerHTML = errHtml;
+      row.after(errRow.firstChild);
+    } else {
+      errRow.outerHTML = errHtml;
+    }
+  } else if (errRow) {
+    errRow.remove();
+  }
+}
+
+function upsertRowInfo(ev) { _upsertShipRowGeneric('info', ev); }
+function upsertRowMawb(ev) { _upsertShipRowGeneric('mawb', ev); }
+
 function onScanProgress(ev) {
+  // total_pages here is the actual bounded page count for the 7-day scan
+  // window (computed by a probe pass on the backend), so this fraction is
+  // accurate — not Nimbus's full unbounded history page count.
   const pct = Math.round(ev.page / ev.total_pages * 100);
   document.getElementById('scan-prog-bar').style.width = pct + '%';
   document.getElementById('scan-prog-bar').classList.remove('g-prog-pulse');
   document.getElementById('scan-prog-txt').textContent =
-    `扫描第 ${ev.page} / ${ev.total_pages} 页，已发现 ${ev.found} 个失败 Shipment`;
+    `扫描第 ${ev.page} / ${ev.total_pages} 页（最近 7 天），已发现 ${ev.found} 个失败 Shipment`;
   document.getElementById('scan-prog-pct').textContent = pct + '%';
 }
 
-async function onScanDone(count) {
+async function onScanDone(ev) {
+  let count     = ev.count;
+  let countInfo = ev.count_info || 0;
+  let countMawb = ev.count_mawb || 0;
   // Re-sync ship list from backend to fix any SSE-dropped events
   try {
     const me = await fetch('/api/me').then(r => r.json());
@@ -632,6 +814,28 @@ async function onScanDone(count) {
       // Fetch error reasons for all found ships
       for (const sh of me.ships) fetchReasons(sh.sn);
     }
+    if (me && Array.isArray(me.ships_info)) {
+      for (const sh of me.ships_info) {
+        if (!_shipsInfo[sh.sn]) {
+          upsertRowInfo({sn: sh.sn, failed: sh.failed, state: sh.state || 'found',
+                         done: sh.done || 0, total: sh.total || 0,
+                         created_at: sh.created_at || ''});
+        }
+      }
+      countInfo = me.ships_info.length;
+      for (const sh of me.ships_info) fetchReasonsGeneric('info', sh.sn);
+    }
+    if (me && Array.isArray(me.ships_mawb)) {
+      for (const sh of me.ships_mawb) {
+        if (!_shipsMawb[sh.sn]) {
+          upsertRowMawb({sn: sh.sn, failed: sh.failed, state: sh.state || 'found',
+                         done: sh.done || 0, total: sh.total || 0,
+                         created_at: sh.created_at || ''});
+        }
+      }
+      countMawb = me.ships_mawb.length;
+      for (const sh of me.ships_mawb) fetchReasonsGeneric('mawb', sh.sn);
+    }
   } catch(e) {}
 
   document.getElementById('scan-desc').textContent =
@@ -641,7 +845,11 @@ async function onScanDone(count) {
   _stats.found = count;
   document.getElementById('n-found').textContent = count || '—';
 
-  if (count > 0) {
+  document.getElementById('ship-tab-hawb-count').textContent = count     ? `(${count})`     : '';
+  document.getElementById('ship-tab-info-count').textContent = countInfo ? `(${countInfo})` : '';
+  document.getElementById('ship-tab-mawb-count').textContent = countMawb ? `(${countMawb})` : '';
+
+  if (count > 0 || countInfo > 0 || countMawb > 0) {
     document.getElementById('card-resync').style.display = '';
     document.getElementById('card-ships').style.display  = '';
   }
@@ -752,6 +960,17 @@ function showPage(name) {
   }
 }
 
+// ── Failed-shipment sub-tabs (new: HAWB Milestone / Shipment Info / MAWB Milestone) ──
+function showShipTab(name) {
+  _shipTab = name;
+  document.getElementById('ship-table-hawb').style.display = name === 'hawb' ? '' : 'none';
+  document.getElementById('ship-table-info').style.display = name === 'info' ? '' : 'none';
+  document.getElementById('ship-table-mawb').style.display = name === 'mawb' ? '' : 'none';
+  document.getElementById('ship-tab-hawb').classList.toggle('active', name === 'hawb');
+  document.getElementById('ship-tab-info').classList.toggle('active', name === 'info');
+  document.getElementById('ship-tab-mawb').classList.toggle('active', name === 'mawb');
+}
+
 const LOG_STATE = {
   done:      { badge: 'g-badge-green',  label: '完成' },
   partial:   { badge: 'g-badge-yellow', label: '部分完成' },
@@ -790,10 +1009,16 @@ async function doLogout() {
   _loggedIn    = false;
   _username    = '';
   _ships       = {};
+  _shipsInfo   = {};
+  _shipsMawb   = {};
   _allShipsCa  = [];
   _stats       = {found:0,ok:0,fail:0,total_ev:0,done_ev:0};
   for (const k in _reasons) delete _reasons[k];
+  for (const k in _reasonsInfo) delete _reasonsInfo[k];
+  for (const k in _reasonsMawb) delete _reasonsMawb[k];
   document.getElementById('ship-body').innerHTML = '';
+  document.getElementById('ship-body-info').innerHTML = '';
+  document.getElementById('ship-body-mawb').innerHTML = '';
   document.getElementById('card-resync').style.display = 'none';
   document.getElementById('card-ships').style.display  = 'none';
   document.getElementById('scan-desc').textContent = '查找所有存在 HAWB Milestone 失败的 Shipment';
@@ -827,6 +1052,15 @@ async function doScan() {
       if (errRow) errRow.remove();
     }
   }
+  // Shipment Info / MAWB Milestone have no manual-add equivalent — clear entirely
+  _shipsInfo = {};
+  _shipsMawb = {};
+  for (const k in _reasonsInfo) delete _reasonsInfo[k];
+  for (const k in _reasonsMawb) delete _reasonsMawb[k];
+  document.getElementById('ship-body-info').innerHTML = '';
+  document.getElementById('ship-body-mawb').innerHTML = '';
+  document.getElementById('ship-tab-info-count').textContent = '';
+  document.getElementById('ship-tab-mawb-count').textContent = '';
   const hasManual = Object.keys(_ships).length > 0;
   if (!hasManual) {
     document.getElementById('card-resync').style.display = 'none';
@@ -866,6 +1100,41 @@ async function doResyncOne(sn) {
 
 async function doStopOne(sn) {
   await post('/api/stop_one', {sn});
+}
+
+// ── Shipment Info / MAWB Milestone actions (new, isolated from doResyncOne/doStopOne) ──
+async function doResyncOneInfo(sn) {
+  startSSE();
+  const r = await post('/api/resync_one_info', {sn});
+  if (!r.ok) {
+    stopSSE();
+    if (r.error && r.error.includes('登录')) { showLogin(); return; }
+    alert(r.error || '操作失败');
+    return;
+  }
+  const ship = _shipsInfo[sn];
+  if (ship) upsertRowInfo({sn, failed: ship.failed, state: 'running', done: 0, total: ship.failed});
+}
+
+async function doStopOneInfo(sn) {
+  await post('/api/stop_one_info', {sn});
+}
+
+async function doResyncOneMawb(sn) {
+  startSSE();
+  const r = await post('/api/resync_one_mawb', {sn});
+  if (!r.ok) {
+    stopSSE();
+    if (r.error && r.error.includes('登录')) { showLogin(); return; }
+    alert(r.error || '操作失败');
+    return;
+  }
+  const ship = _shipsMawb[sn];
+  if (ship) upsertRowMawb({sn, failed: ship.failed, state: 'running', done: 0, total: ship.failed});
+}
+
+async function doStopOneMawb(sn) {
+  await post('/api/stop_one_mawb', {sn});
 }
 
 async function doAddManual() {

@@ -116,6 +116,10 @@ def _sess() -> dict:
                 "q":        queue.Queue(maxsize=8000),
                 "stop":     threading.Event(),
                 "ship_stops": {},
+                "ships_info":      [],
+                "ships_mawb":      [],
+                "ship_stops_info": {},
+                "ship_stops_mawb": {},
                 "seen":     datetime.now(),
                 "_perm_ok": False,  # needs re-check after cookie restore
             }
@@ -215,6 +219,34 @@ def _push_ship(s: dict, sn: str, failed, state: str, done: int = 0, total: int =
              "errors": errors or []})
 
 
+def _push_ship_info(s: dict, sn: str, failed, state: str, done: int = 0, total: int = 0, errors: list = None):
+    for item in s["ships_info"]:
+        if item["sn"] == sn:
+            item["state"] = state
+            item["done"]  = done
+            item["total"] = total
+            if errors is not None:
+                item["errors"] = errors
+            break
+    _bc(s, {"type": "ship_info", "sn": sn, "failed": failed,
+             "state": state, "done": done, "total": total,
+             "errors": errors or []})
+
+
+def _push_ship_mawb(s: dict, sn: str, failed, state: str, done: int = 0, total: int = 0, errors: list = None):
+    for item in s["ships_mawb"]:
+        if item["sn"] == sn:
+            item["state"] = state
+            item["done"]  = done
+            item["total"] = total
+            if errors is not None:
+                item["errors"] = errors
+            break
+    _bc(s, {"type": "ship_mawb", "sn": sn, "failed": failed,
+             "state": state, "done": done, "total": total,
+             "errors": errors or []})
+
+
 def _push_stat(s: dict, force: bool = False):
     now = time.time()
     if not force and now - s.get("_last_stat_t", 0) < 0.4:
@@ -279,6 +311,8 @@ def api_me():
         "status":    s["status"],
         "stats":     s["stats"],
         "ships":     s["ships"],
+        "ships_info": s["ships_info"],
+        "ships_mawb": s["ships_mawb"],
     })
 
 
@@ -362,6 +396,8 @@ def api_logout():
     s["username"] = ""
     s["status"]   = "idle"
     s["ships"]    = []
+    s["ships_info"] = []
+    s["ships_mawb"] = []
     s["stats"]    = _empty_stats()
     session.pop("_tok", None)
     session.pop("_usr", None)
@@ -375,6 +411,8 @@ def api_scan():
         return jsonify({"ok": False, "error": "请先登录"}), 401
     # Keep manually-added ships; scan results will merge in
     s["ships"] = [sh for sh in s["ships"] if sh.get("manual")]
+    s["ships_info"] = []
+    s["ships_mawb"] = []
     s["stats"] = _empty_stats()
     _push_status(s, "scanning")
     threading.Thread(target=_scan_worker, args=(s,), daemon=True).start()
@@ -424,6 +462,52 @@ def api_stop_one():
     if ev:
         ev.set()
         _log(s, f"{sn} 已取消", "warning")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/resync_one_info", methods=["POST"])
+def api_resync_one_info():
+    s = _sess()
+    if not s["token"]:
+        return jsonify({"ok": False, "error": "请先登录"}), 401
+    sn = ((request.json or {}).get("sn") or "").strip()
+    ship = next((x for x in s["ships_info"] if x["sn"] == sn), None)
+    if not ship:
+        return jsonify({"ok": False, "error": f"找不到 {sn}"}), 404
+    threading.Thread(target=_resync_one_ship_info_standalone, args=(s, ship), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/stop_one_info", methods=["POST"])
+def api_stop_one_info():
+    s  = _sess()
+    sn = ((request.json or {}).get("sn") or "").strip()
+    ev = s["ship_stops_info"].get(sn)
+    if ev:
+        ev.set()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/resync_one_mawb", methods=["POST"])
+def api_resync_one_mawb():
+    s = _sess()
+    if not s["token"]:
+        return jsonify({"ok": False, "error": "请先登录"}), 401
+    sn = ((request.json or {}).get("sn") or "").strip()
+    ship = next((x for x in s["ships_mawb"] if x["sn"] == sn), None)
+    if not ship:
+        return jsonify({"ok": False, "error": f"找不到 {sn}"}), 404
+    threading.Thread(target=_resync_one_ship_mawb_standalone, args=(s, ship), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/stop_one_mawb", methods=["POST"])
+def api_stop_one_mawb():
+    s  = _sess()
+    sn = ((request.json or {}).get("sn") or "").strip()
+    ev = s["ship_stops_mawb"].get(sn)
+    if ev:
+        ev.set()
     return jsonify({"ok": True})
 
 
@@ -532,6 +616,62 @@ def _get_error_count(token: str, sid: str) -> int:
     except Exception:
         pass
     return 0
+
+
+def _get_shipment_info_errors(token: str, sid: str) -> list:
+    """Return all shipment-event entries whose operateResult is neither
+    SUCCESS nor IGNORE — this endpoint has no server-side error filter,
+    so every event must be paged through and filtered here."""
+    errors = []
+    try:
+        page, total_pages = 1, 9999
+        while page <= total_pages:
+            resp = _nimbus(token,
+                           "/api/admin/operate/tenant-sync/shipment-event/pageSearch",
+                           {"shipmentId": sid, "current": page, "pageSize": 100})
+            if not resp.get("success"):
+                break
+            total_pages = resp.get("totalPages") or 1
+            items = resp.get("data") or []
+            for it in items:
+                if (it.get("operateResult") or "").upper() not in ("SUCCESS", "IGNORE"):
+                    errors.append(it)
+            if not items:
+                break
+            page += 1
+    except Exception:
+        pass
+    return errors
+
+
+def _get_mawb_milestone_errors(token: str, sid: str) -> list:
+    """Same as _get_shipment_info_errors but against mawbTrack-event/pageSearch."""
+    errors = []
+    try:
+        page, total_pages = 1, 9999
+        while page <= total_pages:
+            resp = _nimbus(token,
+                           "/api/admin/operate/tenant-sync/mawbTrack-event/pageSearch",
+                           {"shipmentId": sid, "current": page, "pageSize": 100})
+            if not resp.get("success"):
+                break
+            total_pages = resp.get("totalPages") or 1
+            items = resp.get("data") or []
+            for it in items:
+                if (it.get("operateResult") or "").upper() not in ("SUCCESS", "IGNORE"):
+                    errors.append(it)
+            if not items:
+                break
+            page += 1
+    except Exception:
+        pass
+    return errors
+
+
+def _check_extra_errors(token: str, c: dict) -> tuple:
+    """Run the Shipment Info + MAWB Milestone checks for one scan candidate."""
+    return (_get_shipment_info_errors(token, c["sid"]),
+            _get_mawb_milestone_errors(token, c["sid"]))
 
 
 def _parse_nested(val):
@@ -691,6 +831,68 @@ def api_ship_reasons():
         summary.append({"action": action, "count": info["count"], "msg": msg})
 
     return jsonify({"ok": True, "summary": summary})
+
+
+def _group_extra_errors(errs: list) -> list:
+    """Shared grouping logic for Shipment Info / MAWB Milestone reason summaries."""
+    groups: dict = {}
+    for ev in errs:
+        action = (ev.get("operateAction") or "unknown").strip()
+        raw_err = _find_error_raw(ev)
+        short_err = raw_err.strip()[:500]
+        ctx = _extract_context(ev)
+        if action not in groups:
+            groups[action] = {"count": 0, "err_counts": {}, "ctx_counts": {}}
+        groups[action]["count"] += 1
+        if short_err:
+            ec = groups[action]["err_counts"]
+            ec[short_err] = ec.get(short_err, 0) + 1
+        if ctx:
+            cc = groups[action]["ctx_counts"]
+            cc[ctx] = cc.get(ctx, 0) + 1
+
+    summary = []
+    for action, info in sorted(groups.items(), key=lambda x: -x[1]["count"])[:3]:
+        err_counts = info["err_counts"]
+        ctx_counts = info["ctx_counts"]
+        top_err = max(err_counts, key=err_counts.get) if err_counts else ""
+        top_ctx = max(ctx_counts, key=ctx_counts.get) if ctx_counts else ""
+        if top_err and top_ctx:
+            msg = f"{top_ctx} — {top_err}"
+        elif top_err:
+            msg = top_err
+        elif top_ctx:
+            msg = top_ctx
+        else:
+            msg = ""
+        summary.append({"action": action, "count": info["count"], "msg": msg})
+    return summary
+
+
+@app.route("/api/ship_reasons_info", methods=["POST"])
+def api_ship_reasons_info():
+    s = _sess()
+    if not s.get("token"):
+        return jsonify({"ok": False, "error": "未登录"}), 401
+    sn = ((request.get_json() or {}).get("sn") or "").strip()
+    ship = next((sh for sh in s["ships_info"] if sh["sn"] == sn), None)
+    if not ship:
+        return jsonify({"ok": False, "error": "找不到"}), 404
+    errs = _get_shipment_info_errors(s["token"], ship["sid"])
+    return jsonify({"ok": True, "summary": _group_extra_errors(errs)})
+
+
+@app.route("/api/ship_reasons_mawb", methods=["POST"])
+def api_ship_reasons_mawb():
+    s = _sess()
+    if not s.get("token"):
+        return jsonify({"ok": False, "error": "未登录"}), 401
+    sn = ((request.get_json() or {}).get("sn") or "").strip()
+    ship = next((sh for sh in s["ships_mawb"] if sh["sn"] == sn), None)
+    if not ship:
+        return jsonify({"ok": False, "error": "找不到"}), 404
+    errs = _get_mawb_milestone_errors(s["token"], ship["sid"])
+    return jsonify({"ok": True, "summary": _group_extra_errors(errs)})
 
 
 # ── SN info cache (clientName / branchCode) ──────────────────────────────────
@@ -918,10 +1120,45 @@ def _scan_worker(s: dict):
     found = list(s["ships"])
     existing_sns = {sh["sn"] for sh in found}
     all_ca: list = []   # all shipments scanned (for dashboard stats)
+    found_info: list = []   # Shipment Info Error shipments (new, isolated from HAWB)
+    found_mawb: list = []   # MAWB Milestone Error shipments (new, isolated from HAWB)
 
     try:
         page = 1
         total_pages = 9999
+        # Scan scope: only shipments created within the last 7 days.
+        # NOTE: a shipment created earlier than this that still has an
+        # unresolved error will no longer surface here — confirmed acceptable.
+        scan_cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        # Probe pass: cheaply page through globalSearch (no per-shipment checks)
+        # just to find how many pages actually fall within the scan window, so
+        # progress can show an accurate "page N / scan_total_pages" instead of
+        # Nimbus's full (unbounded) total_pages.
+        scan_total_pages = 1
+        try:
+            probe_page = 1
+            probe_total_pages = 9999
+            while probe_page <= probe_total_pages:
+                presp = _nimbus(token,
+                                "/api/admin/operate/tenant-sync/shipment-event/globalSearch",
+                                {"current": probe_page, "pageSize": 50})
+                if not presp.get("success"):
+                    break
+                probe_total_pages = presp.get("totalPages") or 1
+                scan_total_pages = probe_page
+                hit = False
+                for item in (presp.get("data") or []):
+                    et = item.get("eventTime") or ""
+                    ca = et.replace("T", " ")[:19] if "T" in et else et
+                    if ca and ca < scan_cutoff:
+                        hit = True
+                        break
+                if hit:
+                    break
+                probe_page += 1
+        except Exception:
+            scan_total_pages = 1
 
         # Step 1: globalSearch to discover shipments quickly
         while page <= total_pages and not s["stop"].is_set():
@@ -935,16 +1172,22 @@ def _scan_worker(s: dict):
 
             total_pages = resp.get("totalPages") or 1
             if page == 1:
-                _log(s, f"共 {resp.get('total')} 个 Shipment，{total_pages} 页，正在扫描…")
+                _log(s, f"共 {resp.get('total')} 个 Shipment，扫描最近 7 天（共 {scan_total_pages} 页）…")
 
             # All shipments on this page — verify in parallel (ignore stale failedCnt cache)
             candidates = []
+            hit_scan_cutoff = False
             for item in (resp.get("data") or []):
+                et = item.get("eventTime") or ""
+                ca = et.replace("T", " ")[:19] if "T" in et else et
+                if ca and ca < scan_cutoff:
+                    # globalSearch returns newest-first: once we're past the
+                    # 10-day scan window, everything after is older still
+                    hit_scan_cutoff = True
+                    break
                 sid = str(item.get("shipmentId") or "").strip()
                 sn  = (item.get("shipmentNumber") or "").strip()
                 if sid and sn and sn not in existing_sns:
-                    et = item.get("eventTime") or ""
-                    ca = et.replace("T", " ")[:19] if "T" in et else et
                     candidates.append({"sn": sn, "sid": sid, "created_at": ca})
                     all_ca.append({"sn": sn, "created_at": ca})
 
@@ -970,11 +1213,46 @@ def _scan_worker(s: dict):
                                      "state": "found", "done": 0, "total": 0,
                                      "created_at": c.get("created_at", "")})
 
-            _bc(s, {"type": "scan_progress", "page": page, "total_pages": total_pages,
+            # Shipment Info + MAWB Milestone checks (new, isolated from the HAWB
+            # check above — same candidates list, separate thread pool round)
+            if candidates and not s["stop"].is_set():
+                with ThreadPoolExecutor(max_workers=15) as pool:
+                    fut_map2 = {pool.submit(_check_extra_errors, token, c): c
+                                for c in candidates}
+                    for fut in as_completed(fut_map2):
+                        if s["stop"].is_set():
+                            break
+                        c = fut_map2[fut]
+                        try:
+                            info_errs, mawb_errs = fut.result()
+                        except Exception:
+                            info_errs, mawb_errs = [], []
+                        if info_errs:
+                            ship = {"sn": c["sn"], "sid": c["sid"], "failed": len(info_errs),
+                                    "state": "found", "done": 0, "total": 0,
+                                    "created_at": c.get("created_at", "")}
+                            found_info.append(ship)
+                            _bc(s, {"type": "ship_info", "sn": c["sn"], "failed": len(info_errs),
+                                     "state": "found", "done": 0, "total": 0,
+                                     "created_at": c.get("created_at", "")})
+                        if mawb_errs:
+                            ship = {"sn": c["sn"], "sid": c["sid"], "failed": len(mawb_errs),
+                                    "state": "found", "done": 0, "total": 0,
+                                    "created_at": c.get("created_at", "")}
+                            found_mawb.append(ship)
+                            _bc(s, {"type": "ship_mawb", "sn": c["sn"], "failed": len(mawb_errs),
+                                     "state": "found", "done": 0, "total": 0,
+                                     "created_at": c.get("created_at", "")})
+
+            _bc(s, {"type": "scan_progress", "page": page, "total_pages": scan_total_pages,
                     "found": len(found)})
+            if hit_scan_cutoff:
+                break
             page += 1
 
         s["ships"] = found
+        s["ships_info"] = found_info
+        s["ships_mawb"] = found_mawb
         s["stats"]["found"] = len(found)
         _push_stat(s)
 
@@ -985,7 +1263,8 @@ def _scan_worker(s: dict):
 
         _push_status(s, "scanned")
         _bc(s, {"type": "all_ships_ca", "data": all_ca})
-        _bc(s, {"type": "scan_done", "count": len(found)})
+        _bc(s, {"type": "scan_done", "count": len(found),
+                "count_info": len(found_info), "count_mawb": len(found_mawb)})
 
     except PermissionError as exc:
         s["token"] = None
@@ -1206,6 +1485,175 @@ def _replay(token: str, ev_num: int) -> tuple:
         raise
     except Exception as exc:
         return False, str(exc)
+
+# ── Background: Shipment Info / MAWB Milestone resync (new, isolated) ─────────
+# NOTE: the replay endpoints below are inferred from the confirmed
+# parcelTrack-event/replay URL pattern — not yet verified against a real
+# failing shipment. Confirm once, manually, the first time a real error
+# appears before relying on this in bulk.
+
+def _replay_shipment_info(token: str, ev_id) -> tuple:
+    try:
+        resp = _nimbus(token,
+                       "/api/admin/operate/tenant-sync/shipment-event/replay",
+                       {"id": ev_id}, timeout=15)
+        msg = resp.get("msg") or ""
+        if msg and "success" in msg.lower() and "replay" in msg.lower():
+            return True, msg
+        return (resp.get("success") is True or resp.get("code") == 0), msg
+    except PermissionError:
+        raise
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _replay_mawb_milestone(token: str, ev_id) -> tuple:
+    try:
+        resp = _nimbus(token,
+                       "/api/admin/operate/tenant-sync/mawbTrack-event/replay",
+                       {"id": ev_id}, timeout=15)
+        msg = resp.get("msg") or ""
+        if msg and "success" in msg.lower() and "replay" in msg.lower():
+            return True, msg
+        return (resp.get("success") is True or resp.get("code") == 0), msg
+    except PermissionError:
+        raise
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _resync_extra_type_engine(s: dict, token: str, sn: str, sid: str, w,
+                               stop_ev: "threading.Event",
+                               fetch_errors_fn, replay_fn) -> tuple:
+    """Shared resync loop for Shipment Info / MAWB Milestone.
+
+    Unlike _resync_one_ship, these two endpoints have no server-side error
+    filter, so every iteration must re-page the shipment's full event
+    history and filter client-side — there's no "probe total, jump to last
+    page" shortcut, so this is materially slower per shipment than the HAWB
+    resync loop.
+    """
+    ok = fail = 0
+    err_msgs: list = []
+    attempted_ids: set = set()
+
+    def _stopped():
+        return s["stop"].is_set() or stop_ev.is_set()
+
+    while not _stopped():
+        try:
+            errs = fetch_errors_fn(token, sid)
+        except PermissionError:
+            raise
+        except Exception as exc:
+            err_msgs.append(str(exc))
+            break
+
+        new_errs = [e for e in errs if (e.get("id") or 0) not in attempted_ids]
+        if not new_errs:
+            break
+        for e in new_errs:
+            attempted_ids.add(e.get("id") or 0)
+
+        if _stopped():
+            break
+
+        with ThreadPoolExecutor(max_workers=15) as pool:
+            future_map = {pool.submit(replay_fn, token, e.get("id") or 0): e
+                          for e in new_errs}
+            for fut in as_completed(future_map):
+                e      = future_map[fut]
+                ev_id  = e.get("eventId") or ""
+                action = e.get("operateAction") or ""
+                success, msg = fut.result()
+                w.writerow([datetime.now().isoformat(timespec="seconds"),
+                            sn, ev_id, action, "ok" if success else "fail", msg])
+                if success:
+                    ok += 1
+                else:
+                    fail += 1
+                    if msg and len(err_msgs) < 5:
+                        err_msgs.append(f"{action}: {msg}")
+
+    return ok, fail, err_msgs
+
+
+def _resync_one_ship_info_standalone(s: dict, ship: dict):
+    sn, sid, token = ship["sn"], ship["sid"], s["token"]
+    stop_ev = threading.Event()
+    s["ship_stops_info"][sn] = stop_ev
+    _push_ship_info(s, sn, ship["failed"], "running", 0, ship["failed"])
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = Path("logs") / f"results_info_{sn}_{ts}.csv"
+    try:
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["timestamp", "shipment_number", "event_id",
+                        "operate_action", "result", "message"])
+            ok, fail, errs = _resync_extra_type_engine(
+                s, token, sn, sid, w, stop_ev,
+                _get_shipment_info_errors, _replay_shipment_info)
+    except PermissionError:
+        s["ship_stops_info"].pop(sn, None)
+        s["token"] = None
+        _bc(s, {"type": "need_login"})
+        _push_ship_info(s, sn, ship["failed"], "error", 0, 0)
+        return
+
+    cancelled = stop_ev.is_set()
+    s["ship_stops_info"].pop(sn, None)
+    state = ("cancelled" if cancelled
+             else "done" if fail == 0
+             else "partial" if ok > 0 else "error")
+    _push_ship_info(s, sn, ship["failed"], state, ok, ok + fail, errs)
+    _append_op_log({
+        "ts":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "user":  s.get("username", ""),
+        "sn":    sn,
+        "ok":    ok,
+        "fail":  fail,
+        "state": state,
+        "errorType": "ShipmentInfo",
+    })
+
+
+def _resync_one_ship_mawb_standalone(s: dict, ship: dict):
+    sn, sid, token = ship["sn"], ship["sid"], s["token"]
+    stop_ev = threading.Event()
+    s["ship_stops_mawb"][sn] = stop_ev
+    _push_ship_mawb(s, sn, ship["failed"], "running", 0, ship["failed"])
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = Path("logs") / f"results_mawb_{sn}_{ts}.csv"
+    try:
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["timestamp", "shipment_number", "event_id",
+                        "operate_action", "result", "message"])
+            ok, fail, errs = _resync_extra_type_engine(
+                s, token, sn, sid, w, stop_ev,
+                _get_mawb_milestone_errors, _replay_mawb_milestone)
+    except PermissionError:
+        s["ship_stops_mawb"].pop(sn, None)
+        s["token"] = None
+        _bc(s, {"type": "need_login"})
+        _push_ship_mawb(s, sn, ship["failed"], "error", 0, 0)
+        return
+
+    cancelled = stop_ev.is_set()
+    s["ship_stops_mawb"].pop(sn, None)
+    state = ("cancelled" if cancelled
+             else "done" if fail == 0
+             else "partial" if ok > 0 else "error")
+    _push_ship_mawb(s, sn, ship["failed"], state, ok, ok + fail, errs)
+    _append_op_log({
+        "ts":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "user":  s.get("username", ""),
+        "sn":    sn,
+        "ok":    ok,
+        "fail":  fail,
+        "state": state,
+        "errorType": "MAWBMilestone",
+    })
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
