@@ -330,13 +330,14 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
               <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left;white-space:nowrap">时间</th>
               <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">操作账号</th>
               <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">Shipment Number</th>
+              <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:left">类型</th>
               <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">成功</th>
               <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">失败</th>
               <th style="padding:9px 12px;font-size:.8rem;color:var(--muted);font-weight:600;text-align:center">状态</th>
             </tr>
           </thead>
           <tbody id="log-body">
-            <tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">加载中…</td></tr>
+            <tr><td colspan="7" style="padding:30px;text-align:center;color:var(--muted)">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -978,13 +979,24 @@ const LOG_STATE = {
   cancelled: { badge: 'g-badge-gray',   label: '已取消' },
 };
 
+// entries written before this field existed have no errorType — they were
+// always HAWB Milestone (the only type that existed back then), so that's
+// the correct, non-destructive default for display purposes only.
+const LOG_TYPE = {
+  ShipmentInfo:   'Shipment Info',
+  MAWBMilestone:  'MAWB Milestone',
+};
+function _logTypeLabel(entry) {
+  return LOG_TYPE[entry.errorType] || 'HAWB Milestone';
+}
+
 async function loadLogs() {
   const tbody = document.getElementById('log-body');
-  tbody.innerHTML = '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">加载中…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--muted)">加载中…</td></tr>';
   try {
     const r = await fetch('/api/logs').then(res => res.json());
     if (!r.ok || !r.logs.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">暂无操作记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--muted)">暂无操作记录</td></tr>';
       return;
     }
     tbody.innerHTML = r.logs.map(entry => {
@@ -993,13 +1005,14 @@ async function loadLogs() {
         <td style="white-space:nowrap;color:var(--muted)">${entry.ts}</td>
         <td style="color:var(--text)">${entry.user || '—'}</td>
         <td><span class="sn-mono">${entry.sn}</span></td>
+        <td style="color:var(--muted);font-size:.82rem;white-space:nowrap">${_logTypeLabel(entry)}</td>
         <td style="text-align:center;color:var(--green);font-weight:600">${entry.ok}</td>
         <td style="text-align:center;color:${entry.fail > 0 ? 'var(--red)' : 'var(--muted)'};font-weight:600">${entry.fail}</td>
         <td style="text-align:center"><span class="g-badge ${si.badge}">${si.label}</span></td>
       </tr>`;
     }).join('');
   } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--red)">加载失败</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--red)">加载失败</td></tr>';
   }
 }
 
