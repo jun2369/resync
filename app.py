@@ -11,7 +11,7 @@ import csv
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import queue
 import threading
 import time
@@ -669,9 +669,24 @@ def _get_mawb_milestone_errors(token: str, sid: str) -> list:
 
 
 def _check_extra_errors(token: str, c: dict) -> tuple:
-    """Run the Shipment Info + MAWB Milestone checks for one scan candidate."""
-    return (_get_shipment_info_errors(token, c["sid"]),
-            _get_mawb_milestone_errors(token, c["sid"]))
+    """Run the Shipment Info + MAWB Milestone checks for one scan candidate
+    concurrently (not sequentially), so per-shipment latency is ~1x instead
+    of ~2x — mirrors the existing _check_permission concurrency pattern."""
+    sid = c["sid"]
+    results: dict = {}
+
+    def _run_info():
+        results["info"] = _get_shipment_info_errors(token, sid)
+
+    def _run_mawb():
+        results["mawb"] = _get_mawb_milestone_errors(token, sid)
+
+    t1 = threading.Thread(target=_run_info, daemon=True)
+    t2 = threading.Thread(target=_run_mawb, daemon=True)
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    return (results.get("info", []), results.get("mawb", []))
 
 
 def _parse_nested(val):
@@ -1135,11 +1150,18 @@ def _scan_worker(s: dict):
         # just to find how many pages actually fall within the scan window, so
         # progress can show an accurate "page N / scan_total_pages" instead of
         # Nimbus's full (unbounded) total_pages.
+        # Bounded defensively: responds to Stop, and caps at PROBE_MAX_PAGES so
+        # malformed/missing eventTime data (which would otherwise never trip
+        # the cutoff check below) can't make this silently walk the entire
+        # history with zero progress feedback.
+        PROBE_MAX_PAGES = 30
         scan_total_pages = 1
         try:
             probe_page = 1
             probe_total_pages = 9999
-            while probe_page <= probe_total_pages:
+            while (probe_page <= probe_total_pages
+                   and probe_page <= PROBE_MAX_PAGES
+                   and not s["stop"].is_set()):
                 presp = _nimbus(token,
                                 "/api/admin/operate/tenant-sync/shipment-event/globalSearch",
                                 {"current": probe_page, "pageSize": 50})
@@ -1192,7 +1214,7 @@ def _scan_worker(s: dict):
                     all_ca.append({"sn": sn, "created_at": ca})
 
             if candidates and not s["stop"].is_set():
-                with ThreadPoolExecutor(max_workers=15) as pool:
+                with ThreadPoolExecutor(max_workers=20) as pool:
                     fut_map = {pool.submit(_get_error_count, token, c["sid"]): c
                                for c in candidates}
                     for fut in as_completed(fut_map):
@@ -1214,35 +1236,53 @@ def _scan_worker(s: dict):
                                      "created_at": c.get("created_at", "")})
 
             # Shipment Info + MAWB Milestone checks (new, isolated from the HAWB
-            # check above — same candidates list, separate thread pool round)
+            # check above — same candidates list, separate thread pool round).
+            #
+            # Uses manual pool.shutdown(wait=False) instead of `with
+            # ThreadPoolExecutor(...)`: the `with` form always blocks on exit
+            # until every submitted task finishes (Python gives no way to
+            # abandon already-running tasks), so a single shipment with a huge
+            # event history — these two checks have no server-side filter and
+            # must page through everything — could stall this whole batch
+            # (and Stop) indefinitely. Polling with wait(..., timeout=1) instead
+            # of as_completed() re-checks Stop every second rather than only
+            # when a future happens to finish, and page_deadline caps how long
+            # this batch waits overall; anything still outstanding past either
+            # point is abandoned for this run and simply gets re-checked on the
+            # next scan (these SNs are still inside the 7-day window).
             if candidates and not s["stop"].is_set():
-                with ThreadPoolExecutor(max_workers=15) as pool:
-                    fut_map2 = {pool.submit(_check_extra_errors, token, c): c
+                pool2 = ThreadPoolExecutor(max_workers=20)
+                try:
+                    fut_map2 = {pool2.submit(_check_extra_errors, token, c): c
                                 for c in candidates}
-                    for fut in as_completed(fut_map2):
-                        if s["stop"].is_set():
-                            break
-                        c = fut_map2[fut]
-                        try:
-                            info_errs, mawb_errs = fut.result()
-                        except Exception:
-                            info_errs, mawb_errs = [], []
-                        if info_errs:
-                            ship = {"sn": c["sn"], "sid": c["sid"], "failed": len(info_errs),
-                                    "state": "found", "done": 0, "total": 0,
-                                    "created_at": c.get("created_at", "")}
-                            found_info.append(ship)
-                            _bc(s, {"type": "ship_info", "sn": c["sn"], "failed": len(info_errs),
-                                     "state": "found", "done": 0, "total": 0,
-                                     "created_at": c.get("created_at", "")})
-                        if mawb_errs:
-                            ship = {"sn": c["sn"], "sid": c["sid"], "failed": len(mawb_errs),
-                                    "state": "found", "done": 0, "total": 0,
-                                    "created_at": c.get("created_at", "")}
-                            found_mawb.append(ship)
-                            _bc(s, {"type": "ship_mawb", "sn": c["sn"], "failed": len(mawb_errs),
-                                     "state": "found", "done": 0, "total": 0,
-                                     "created_at": c.get("created_at", "")})
+                    pending = set(fut_map2)
+                    page_deadline = time.time() + 60
+                    while pending and not s["stop"].is_set() and time.time() < page_deadline:
+                        done, pending = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
+                        for fut in done:
+                            c = fut_map2[fut]
+                            try:
+                                info_errs, mawb_errs = fut.result()
+                            except Exception:
+                                info_errs, mawb_errs = [], []
+                            if info_errs:
+                                ship = {"sn": c["sn"], "sid": c["sid"], "failed": len(info_errs),
+                                        "state": "found", "done": 0, "total": 0,
+                                        "created_at": c.get("created_at", "")}
+                                found_info.append(ship)
+                                _bc(s, {"type": "ship_info", "sn": c["sn"], "failed": len(info_errs),
+                                         "state": "found", "done": 0, "total": 0,
+                                         "created_at": c.get("created_at", "")})
+                            if mawb_errs:
+                                ship = {"sn": c["sn"], "sid": c["sid"], "failed": len(mawb_errs),
+                                        "state": "found", "done": 0, "total": 0,
+                                        "created_at": c.get("created_at", "")}
+                                found_mawb.append(ship)
+                                _bc(s, {"type": "ship_mawb", "sn": c["sn"], "failed": len(mawb_errs),
+                                         "state": "found", "done": 0, "total": 0,
+                                         "created_at": c.get("created_at", "")})
+                finally:
+                    pool2.shutdown(wait=False)
 
             _bc(s, {"type": "scan_progress", "page": page, "total_pages": scan_total_pages,
                     "found": len(found)})
@@ -1443,7 +1483,7 @@ def _resync_one_ship(s: dict, token: str, sn: str, sid: str, failed: int, w,
         if _stopped():
             return ok, fail, err_msgs
 
-        with ThreadPoolExecutor(max_workers=15) as pool:
+        with ThreadPoolExecutor(max_workers=20) as pool:
             future_map = {
                 pool.submit(_replay, token, ev.get("id") or 0): ev
                 for ev in new_events
@@ -1558,7 +1598,7 @@ def _resync_extra_type_engine(s: dict, token: str, sn: str, sid: str, w,
         if _stopped():
             break
 
-        with ThreadPoolExecutor(max_workers=15) as pool:
+        with ThreadPoolExecutor(max_workers=20) as pool:
             future_map = {pool.submit(replay_fn, token, e.get("id") or 0): e
                           for e in new_errs}
             for fut in as_completed(future_map):
