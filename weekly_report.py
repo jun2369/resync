@@ -379,7 +379,7 @@ def send_email(snap: dict):
     msg = EmailMessage()
     msg["From"]    = SENDER
     msg["To"]      = RECIPIENT
-    msg["Subject"] = f"[Nimbus 周报] {start} ~ {end} · {n} 票"
+    msg["Subject"] = f"[Nimbus Micra Weekly Report] {start} ~ {end} · {n} 票"
     msg.set_content(
         f"Nimbus 周报 {start} ~ {end}\n\n"
         f"Created Shipments: {n}\n\n"
@@ -500,6 +500,53 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
         if not _authorized():
             return jsonify({"ok": False, "error": "未授权"}), 401
         return jsonify({"ok": True, "status": status()})
+
+    @app.route("/api/weekly/probe")
+    def api_weekly_probe():
+        """临时排查用：返回 getShipmentBasicInfo 的完整原始字段，用来确认
+        HAWB Count / Entry Type / Chargeable Weight / Gross Weight 叫什么名字。
+        字段确定后这个端点就可以删掉。"""
+        if not _authorized():
+            return jsonify({"ok": False, "error": "未授权"}), 401
+
+        sn = (request.args.get("sn") or "297-67729502").strip()
+        tok = session.get("_tok") or _nimbus_login()
+        if not tok:
+            return jsonify({"ok": False, "error": "拿不到 Nimbus token"}), 500
+
+        try:
+            r = req.get(
+                "https://admin.nimbusgroup.us"
+                "/api/admin/operate/shipment-basic/getShipmentBasicInfo",
+                params={"shipmentNumber": sn},
+                timeout=15,
+                headers={
+                    "Authorization": f"Bearer {tok}",
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://admin.nimbusgroup.us/shipment/basic-info",
+                },
+            )
+            body = r.json()
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+        data = body.get("data") if isinstance(body, dict) else None
+        fields = {}
+        if isinstance(data, dict):
+            for k, v in sorted(data.items()):
+                fields[k] = v if not isinstance(v, (dict, list)) else json.dumps(
+                    v, ensure_ascii=False)[:200]
+            _log(f"probe {sn}: {len(fields)} 个字段 -> {sorted(fields)}")
+
+        return jsonify({
+            "ok":          True,
+            "sn":          sn,
+            "http_status": r.status_code,
+            "field_count": len(fields),
+            "field_names": sorted(fields),
+            "fields":      fields,
+            "raw":         body,
+        })
 
     @app.route("/api/weekly/run", methods=["POST"])
     def api_weekly_run():
