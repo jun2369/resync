@@ -708,11 +708,6 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
 
     from flask import jsonify, request, session
 
-    def _authorized() -> bool:
-        if TRIGGER_TOKEN and request.headers.get("X-Report-Token") == TRIGGER_TOKEN:
-            return True
-        return bool(session.get("_tok"))
-
     def _is_admin() -> bool:
         """ADMINS 为空 = 不限制；否则只认名单里的登录邮箱。"""
         if TRIGGER_TOKEN and request.headers.get("X-Report-Token") == TRIGGER_TOKEN:
@@ -723,16 +718,26 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
             return True
         return (session.get("_usr") or "").strip().lower() in ADMINS
 
+    def _deny():
+        """整个周报模块只对管理员开放。未登录给 401，登录了但不在名单给 403。"""
+        if _is_admin():
+            return None
+        if not session.get("_tok"):
+            return jsonify({"ok": False, "error": "未登录"}), 401
+        return jsonify({"ok": False, "error": "需要管理员权限"}), 403
+
     @app.route("/api/weekly/status")
     def api_weekly_status():
-        if not _authorized():
-            return jsonify({"ok": False, "error": "未授权"}), 401
+        denied = _deny()
+        if denied:
+            return denied
         return jsonify({"ok": True, "status": status(), "is_admin": _is_admin()})
 
     @app.route("/api/weekly/config")
     def api_weekly_config_get():
-        if not _authorized():
-            return jsonify({"ok": False, "error": "未授权"}), 401
+        denied = _deny()
+        if denied:
+            return denied
         c = cfg()
         return jsonify({
             "ok":       True,
@@ -757,8 +762,9 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
 
     @app.route("/api/weekly/config", methods=["POST"])
     def api_weekly_config_set():
-        if not _is_admin():
-            return jsonify({"ok": False, "error": "需要管理员权限"}), 403
+        denied = _deny()
+        if denied:
+            return denied
         patch = request.get_json(silent=True) or {}
         try:
             new_cfg = save_config(patch)
@@ -779,15 +785,17 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
 
     @app.route("/api/weekly/timezones")
     def api_weekly_timezones():
-        if not _authorized():
-            return jsonify({"ok": False, "error": "未授权"}), 401
+        denied = _deny()
+        if denied:
+            return denied
         import zoneinfo
         return jsonify({"ok": True, "timezones": sorted(zoneinfo.available_timezones())})
 
     @app.route("/api/weekly/run", methods=["POST"])
     def api_weekly_run():
-        if not _authorized():
-            return jsonify({"ok": False, "error": "未授权"}), 401
+        denied = _deny()
+        if denied:
+            return denied
         # silent=True: a bare POST with no Content-Type would otherwise 415
         body    = request.get_json(silent=True) or {}
         force   = bool(body.get("force_fetch"))
