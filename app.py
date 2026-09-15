@@ -1695,6 +1695,23 @@ def _resync_one_ship_mawb_standalone(s: dict, ship: dict):
         "errorType": "MAWBMilestone",
     })
 
+# ── Weekly report ──────────────────────────────────────────────
+
+# Registered at import time so it also starts under gunicorn (which never runs __main__).
+try:
+    import weekly_report
+    weekly_report.init(
+        app,
+        nimbus=_nimbus,
+        get_basic_info=_get_basic_info,
+        sn_cache=_sn_cache,
+        sn_cache_lock=_sn_cache_lock,
+        save_sn_cache=_save_sn_cache,
+    )
+except Exception as _exc:
+    print(f"[weekly] 初始化失败，周报功能未启用: {_exc!r}", flush=True)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
