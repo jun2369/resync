@@ -13,6 +13,7 @@ import csv
 import io
 import json
 import os
+import re
 import smtplib
 import threading
 import time
@@ -26,50 +27,176 @@ from zoneinfo import ZoneInfo
 
 import requests as req
 
-# ── 配置（全部可用环境变量覆盖） ──────────────────────────────────────────────
-TZ            = ZoneInfo(os.environ.get("REPORT_TZ", "America/Chicago"))
-SEND_WEEKDAY  = int(os.environ.get("REPORT_SEND_WEEKDAY", "1"))   # 0=周一 1=周二
-SEND_HOUR     = int(os.environ.get("REPORT_SEND_HOUR", "16"))     # 16:00
-SEND_MINUTE   = int(os.environ.get("REPORT_SEND_MINUTE", "0"))
-
+# ── 凭证与固定项：只走环境变量，不进配置文件，也不在管理页上显示 ──────────────
 SMTP_HOST     = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT     = int(os.environ.get("SMTP_PORT", "587"))
 SENDER        = os.environ.get("REPORT_SENDER", "jma2369@gmail.com")
-RECIPIENT     = os.environ.get("REPORT_RECIPIENT", "junjie.ma@agslogistics.com")
 SMTP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
 NIMBUS_USERNAME = os.environ.get("NIMBUS_USERNAME", "")
 NIMBUS_PASSWORD = os.environ.get("NIMBUS_PASSWORD", "")
 
 TRIGGER_TOKEN = os.environ.get("REPORT_TRIGGER_TOKEN", "")
-ENABLED       = os.environ.get("REPORT_ENABLED", "1") == "1"
 
-LOG_DIR    = Path("logs")
-STATE_FILE = LOG_DIR / "weekly_report_state.json"
-TICK_SEC   = int(os.environ.get("REPORT_TICK_SEC", "60"))
+# 能进管理页的邮箱，逗号分隔。留空 = 任何登录用户都能改。
+ADMINS = {e.strip().lower()
+          for e in os.environ.get("REPORT_ADMINS", "").split(",") if e.strip()}
+
+LOG_DIR     = Path("logs")
+STATE_FILE  = LOG_DIR / "weekly_report_state.json"
+CONFIG_FILE = LOG_DIR / "weekly_report_config.json"
+TICK_SEC    = int(os.environ.get("REPORT_TICK_SEC", "60"))
+
+# ── 可在管理页改的配置 ────────────────────────────────────────────────────────
+# 优先级：配置文件 > 环境变量 > 这里的默认值。
+# 每次用到都重新读，所以页面上保存后最迟一个 tick（60 秒）生效，不用重启。
+_DEFAULTS = {
+    "enabled":      os.environ.get("REPORT_ENABLED", "1") == "1",
+    "timezone":     os.environ.get("REPORT_TZ", "America/Chicago"),
+    "send_weekday": int(os.environ.get("REPORT_SEND_WEEKDAY", "1")),   # 0=周一
+    "send_hour":    int(os.environ.get("REPORT_SEND_HOUR", "16")),
+    "send_minute":  int(os.environ.get("REPORT_SEND_MINUTE", "0")),
+    "recipients":   [e.strip() for e in os.environ.get(
+        "REPORT_RECIPIENT", "junjie.ma@agslogistics.com").split(",") if e.strip()],
+}
+
+WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+_cfg_lock  = threading.Lock()
+_cfg_cache: dict = {}      # 文件内容的内存副本
+_cfg_mtime = None          # 用来判断文件有没有被外部改动
 
 # init() 注入的 app 内部 helper
 _ctx: dict = {}
 
 
+def cfg() -> dict:
+    """当前生效配置。文件变了会自动重新读，所以多进程/手工改文件也能跟上。"""
+    global _cfg_cache, _cfg_mtime
+    with _cfg_lock:
+        try:
+            m = CONFIG_FILE.stat().st_mtime
+        except OSError:
+            m = None
+        if m != _cfg_mtime:
+            _cfg_mtime = m
+            _cfg_cache = {}
+            if m is not None:
+                try:
+                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        _cfg_cache = loaded
+                except Exception as exc:
+                    print(f"[weekly] 配置文件读取失败，回落到环境变量: {exc!r}",
+                          flush=True)
+        merged = dict(_DEFAULTS)
+        merged.update(_cfg_cache)
+        return merged
+
+
+def _tz() -> ZoneInfo:
+    name = cfg().get("timezone") or "America/Chicago"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        print(f"[weekly] 时区 {name!r} 无效，回落到 America/Chicago", flush=True)
+        return ZoneInfo("America/Chicago")
+
+
+def recipients() -> list:
+    r = cfg().get("recipients") or []
+    if isinstance(r, str):
+        r = [x.strip() for x in r.split(",")]
+    return [x for x in r if x]
+
+
+def save_config(patch: dict) -> dict:
+    """校验并写入配置。只接受已知字段，返回写入后的完整生效配置。"""
+    global _cfg_cache, _cfg_mtime
+    clean = {}
+
+    if "enabled" in patch:
+        clean["enabled"] = bool(patch["enabled"])
+
+    if "timezone" in patch:
+        name = str(patch["timezone"]).strip()
+        ZoneInfo(name)                      # 无效时区在这里就抛出，不会写进文件
+        clean["timezone"] = name
+
+    if "send_weekday" in patch:
+        v = int(patch["send_weekday"])
+        if not 0 <= v <= 6:
+            raise ValueError("send_weekday 必须是 0~6（0=周一）")
+        clean["send_weekday"] = v
+
+    if "send_hour" in patch:
+        v = int(patch["send_hour"])
+        if not 0 <= v <= 23:
+            raise ValueError("send_hour 必须是 0~23")
+        clean["send_hour"] = v
+
+    if "send_minute" in patch:
+        v = int(patch["send_minute"])
+        if not 0 <= v <= 59:
+            raise ValueError("send_minute 必须是 0~59")
+        clean["send_minute"] = v
+
+    if "recipients" in patch:
+        raw = patch["recipients"]
+        if isinstance(raw, str):
+            raw = re.split(r"[,;\s]+", raw)
+        seen, out = set(), []
+        for e in (str(x).strip() for x in raw):
+            if not e:
+                continue
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e):
+                raise ValueError(f"收件人邮箱格式不对: {e}")
+            if e.lower() not in seen:
+                seen.add(e.lower())
+                out.append(e)
+        if not out:
+            raise ValueError("收件人不能为空")
+        clean["recipients"] = out
+
+    with _cfg_lock:
+        current = dict(_cfg_cache)
+        current.update(clean)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(current, f, ensure_ascii=False, indent=2)
+        tmp.replace(CONFIG_FILE)
+        _cfg_cache = current
+        try:
+            _cfg_mtime = CONFIG_FILE.stat().st_mtime
+        except OSError:
+            _cfg_mtime = None
+
+    _log(f"配置已更新: {clean}")
+    return cfg()
+
+
 def _log(msg: str):
-    print(f"[weekly] {datetime.now(TZ):%Y-%m-%d %H:%M:%S %Z} {msg}", flush=True)
+    print(f"[weekly] {datetime.now(_tz()):%Y-%m-%d %H:%M:%S %Z} {msg}", flush=True)
 
 
 # ── 周区间 ────────────────────────────────────────────────────────────────────
 def last_week_range(today: date = None):
     """返回上一周的 (周一, 周日)。9/15 -> (9/07, 9/13)；9/22 -> (9/14, 9/20)。"""
-    today = today or datetime.now(TZ).date()
+    today = today or datetime.now(_tz()).date()
     this_monday = today - timedelta(days=today.weekday())
     start = this_monday - timedelta(days=7)
     return start, start + timedelta(days=6)
 
 
 def send_moment(week_start: date) -> datetime:
-    """该期周报应当发出的时刻 = 下一周的周二 16:00 中部时间。"""
+    """该期周报应当发出的时刻 = 下一周的配置星期几 + 配置时分。"""
+    c = cfg()
     this_monday = week_start + timedelta(days=7)
-    d = this_monday + timedelta(days=SEND_WEEKDAY)
-    return datetime(d.year, d.month, d.day, SEND_HOUR, SEND_MINUTE, tzinfo=TZ)
+    d = this_monday + timedelta(days=int(c["send_weekday"]))
+    return datetime(d.year, d.month, d.day,
+                    int(c["send_hour"]), int(c["send_minute"]), tzinfo=_tz())
 
 
 def snapshot_path(week_start: date) -> Path:
@@ -254,7 +381,7 @@ def build_snapshot(week_start: date, week_end: date, force: bool = False) -> dic
     snap = {
         "week_start": week_start.isoformat(),
         "week_end":   week_end.isoformat(),
-        "fetched_at": datetime.now(TZ).isoformat(timespec="seconds"),
+        "fetched_at": datetime.now(_tz()).isoformat(timespec="seconds"),
         "rows":       rows,
     }
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -412,8 +539,11 @@ def send_email(snap: dict):
     n = len(snap.get("rows", []))
 
     msg = EmailMessage()
+    to = recipients()
+    if not to:
+        raise RuntimeError("没有配置收件人")
     msg["From"]    = SENDER
-    msg["To"]      = RECIPIENT
+    msg["To"]      = ", ".join(to)
     msg["Subject"] = f"[Nimbus Micra Weekly Report] {start} ~ {end} · {n} 票"
     msg.set_content(
         f"Nimbus 周报 {start} ~ {end}\n\n"
@@ -427,8 +557,8 @@ def send_email(snap: dict):
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
         s.starttls()
         s.login(SENDER, SMTP_PASSWORD)
-        s.send_message(msg)
-    _log(f"邮件已发送 -> {RECIPIENT}（{start}~{end}, {n} 条）")
+        s.send_message(msg, from_addr=SENDER, to_addrs=to)
+    _log(f"邮件已发送 -> {', '.join(to)}（{start}~{end}, {n} 条）")
 
 
 # ── 一期周报的完整流程 ────────────────────────────────────────────────────────
@@ -455,7 +585,9 @@ def run_once(week_start: date = None, week_end: date = None,
 # ── 调度线程 ──────────────────────────────────────────────────────────────────
 def _tick():
     """每次唤醒检查一遍：该抓的抓，该发的发。重启后会自动补跑错过的窗口。"""
-    now = datetime.now(TZ)
+    if not cfg().get("enabled"):
+        return
+    now = datetime.now(_tz())
     week_start, week_end = last_week_range(now.date())
     key = week_start.isoformat()
 
@@ -486,8 +618,10 @@ def _tick():
 
 
 def _loop():
-    _log(f"调度启动：每周{'一二三四五六日'[SEND_WEEKDAY]} "
-         f"{SEND_HOUR:02d}:{SEND_MINUTE:02d} {TZ} 发送上一周数据")
+    c = cfg()
+    _log(f"调度启动：每{WEEKDAY_NAMES[int(c['send_weekday'])]} "
+         f"{int(c['send_hour']):02d}:{int(c['send_minute']):02d} "
+         f"{c['timezone']} 发送上一周数据 -> {', '.join(recipients())}")
     while True:
         try:
             _tick()
@@ -497,20 +631,25 @@ def _loop():
 
 
 def status() -> dict:
-    now = datetime.now(TZ)
+    c = cfg()
+    now = datetime.now(_tz())
     week_start, week_end = last_week_range(now.date())
     snap = snapshot_path(week_start)
     return {
-        "enabled":        ENABLED,
+        "enabled":        bool(c.get("enabled")),
         "now":            now.isoformat(timespec="seconds"),
-        "timezone":       str(TZ),
+        "timezone":       c.get("timezone"),
+        "send_weekday":   int(c["send_weekday"]),
+        "send_weekday_name": WEEKDAY_NAMES[int(c["send_weekday"])],
+        "send_hour":      int(c["send_hour"]),
+        "send_minute":    int(c["send_minute"]),
         "week_start":     week_start.isoformat(),
         "week_end":       week_end.isoformat(),
         "send_due_at":    send_moment(week_start).isoformat(timespec="seconds"),
         "snapshot_exists": snap.exists(),
         "snapshot_file":  snap.name,
         "sender":         SENDER,
-        "recipient":      RECIPIENT,
+        "recipients":     recipients(),
         "smtp_configured":   bool(SMTP_PASSWORD),
         "nimbus_configured": bool(NIMBUS_USERNAME and NIMBUS_PASSWORD),
         "state":          _read_state(),
@@ -530,11 +669,73 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
             return True
         return bool(session.get("_tok"))
 
+    def _is_admin() -> bool:
+        """ADMINS 为空 = 不限制；否则只认名单里的登录邮箱。"""
+        if TRIGGER_TOKEN and request.headers.get("X-Report-Token") == TRIGGER_TOKEN:
+            return True
+        if not session.get("_tok"):
+            return False
+        if not ADMINS:
+            return True
+        return (session.get("_usr") or "").strip().lower() in ADMINS
+
     @app.route("/api/weekly/status")
     def api_weekly_status():
         if not _authorized():
             return jsonify({"ok": False, "error": "未授权"}), 401
-        return jsonify({"ok": True, "status": status()})
+        return jsonify({"ok": True, "status": status(), "is_admin": _is_admin()})
+
+    @app.route("/api/weekly/config")
+    def api_weekly_config_get():
+        if not _authorized():
+            return jsonify({"ok": False, "error": "未授权"}), 401
+        c = cfg()
+        return jsonify({
+            "ok":       True,
+            "is_admin": _is_admin(),
+            "config": {
+                "enabled":      bool(c.get("enabled")),
+                "timezone":     c.get("timezone"),
+                "send_weekday": int(c["send_weekday"]),
+                "send_hour":    int(c["send_hour"]),
+                "send_minute":  int(c["send_minute"]),
+                "recipients":   recipients(),
+            },
+            # 只读，供页面展示——凭证本身不返回
+            "sender":            SENDER,
+            "smtp_configured":   bool(SMTP_PASSWORD),
+            "nimbus_configured": bool(NIMBUS_USERNAME and NIMBUS_PASSWORD),
+            "status":            status(),
+        })
+
+    @app.route("/api/weekly/config", methods=["POST"])
+    def api_weekly_config_set():
+        if not _is_admin():
+            return jsonify({"ok": False, "error": "需要管理员权限"}), 403
+        patch = request.get_json(silent=True) or {}
+        try:
+            new_cfg = save_config(patch)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{exc}"}), 400
+        return jsonify({
+            "ok": True,
+            "config": {
+                "enabled":      bool(new_cfg.get("enabled")),
+                "timezone":     new_cfg.get("timezone"),
+                "send_weekday": int(new_cfg["send_weekday"]),
+                "send_hour":    int(new_cfg["send_hour"]),
+                "send_minute":  int(new_cfg["send_minute"]),
+                "recipients":   recipients(),
+            },
+            "status": status(),
+        })
+
+    @app.route("/api/weekly/timezones")
+    def api_weekly_timezones():
+        if not _authorized():
+            return jsonify({"ok": False, "error": "未授权"}), 401
+        import zoneinfo
+        return jsonify({"ok": True, "timezones": sorted(zoneinfo.available_timezones())})
 
     @app.route("/api/weekly/run", methods=["POST"])
     def api_weekly_run():
@@ -551,7 +752,4 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
             _log(f"手动触发失败: {exc!r}")
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
 
-    if ENABLED:
-        threading.Thread(target=_loop, daemon=True, name="weekly-report").start()
-    else:
-        _log("REPORT_ENABLED=0，调度未启动")
+    threading.Thread(target=_loop, daemon=True, name="weekly-report").start()

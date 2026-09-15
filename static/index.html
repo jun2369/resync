@@ -163,6 +163,9 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     <button class="g-tab" id="tab-dash" onclick="showPage('dash')">
       <i class="bi bi-bar-chart me-1"></i>面板
     </button>
+    <button class="g-tab" id="tab-report" onclick="showPage('report')" style="display:none">
+      <i class="bi bi-envelope-paper me-1"></i>周报设置
+    </button>
   </div>
   </div>
 
@@ -386,6 +389,113 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
 
   </div><!-- /page-dash -->
 
+  <!-- ── Page: Weekly report settings ── -->
+  <div id="page-report" style="display:none;max-width:860px;margin:0 auto">
+
+    <!-- 当前状态 -->
+    <div class="g-card mb-3">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem">
+        <i class="bi bi-activity me-2" style="color:var(--accent)"></i>当前状态
+      </div>
+      <div class="p-4" id="rp-status" style="font-size:.88rem;color:var(--muted)">加载中…</div>
+    </div>
+
+    <!-- 配置表单 -->
+    <div class="g-card mb-3">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem">
+        <i class="bi bi-sliders me-2" style="color:var(--accent)"></i>发送配置
+      </div>
+      <div class="p-4">
+
+        <div class="mb-4">
+          <label class="form-label" style="font-size:.85rem;font-weight:600">收件人</label>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">
+            一行一个，或用逗号分隔。保存时会校验格式并自动去重。
+          </div>
+          <textarea id="rp-recipients" rows="4" class="form-control"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:.86rem;font-family:ui-monospace,Menlo,Consolas,monospace"
+            placeholder="name@example.com"></textarea>
+        </div>
+
+        <div class="row g-3 mb-4">
+          <div class="col-md-4">
+            <label class="form-label" style="font-size:.85rem;font-weight:600">星期几</label>
+            <select id="rp-weekday" class="form-select"
+              style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:.86rem">
+              <option value="0">周一</option><option value="1">周二</option>
+              <option value="2">周三</option><option value="3">周四</option>
+              <option value="4">周五</option><option value="5">周六</option>
+              <option value="6">周日</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" style="font-size:.85rem;font-weight:600">时间</label>
+            <input id="rp-time" type="time" class="form-control"
+              style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:.86rem">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" style="font-size:.85rem;font-weight:600">时区</label>
+            <input id="rp-tz" list="rp-tzlist" class="form-control"
+              style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:.86rem"
+              placeholder="America/Chicago">
+            <datalist id="rp-tzlist"></datalist>
+          </div>
+        </div>
+
+        <div class="form-check mb-4">
+          <input class="form-check-input" type="checkbox" id="rp-enabled">
+          <label class="form-check-label" for="rp-enabled" style="font-size:.86rem">
+            启用自动发送
+            <span style="color:var(--muted);font-size:.8rem">（关闭后调度停止，手动发送仍可用）</span>
+          </label>
+        </div>
+
+        <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.25);
+        border-radius:8px;padding:10px 14px;font-size:.8rem;color:var(--muted);margin-bottom:16px">
+          <i class="bi bi-info-circle me-1" style="color:var(--yellow)"></i>
+          保存后最迟 60 秒生效，不需要重启服务。若改后的发送时刻已经过去、而本期尚未发送，
+          会在下一次检查时立即补发。
+        </div>
+
+        <div class="d-flex gap-2 align-items-center">
+          <button class="g-btn" id="rp-save" onclick="saveReportConfig()"
+            style="background:var(--accent);color:#fff">
+            <i class="bi bi-check-lg"></i>保存配置
+          </button>
+          <button class="g-btn" onclick="loadReportConfig()"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border)">
+            <i class="bi bi-arrow-clockwise"></i>重新载入
+          </button>
+          <span id="rp-msg" style="font-size:.85rem;margin-left:6px"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 手动发送 -->
+    <div class="g-card mb-4">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem">
+        <i class="bi bi-send me-2" style="color:var(--accent)"></i>手动发送
+      </div>
+      <div class="p-4">
+        <div style="font-size:.82rem;color:var(--muted);margin-bottom:12px">
+          立刻按当前配置发一封上一周的周报，不影响自动发送的排期。
+        </div>
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+          <button class="g-btn" id="rp-send" onclick="sendReportNow(false)"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border)">
+            <i class="bi bi-send"></i>立即发送
+          </button>
+          <button class="g-btn" id="rp-send-force" onclick="sendReportNow(true)"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border)">
+            <i class="bi bi-arrow-repeat"></i>重新抓取后发送
+          </button>
+          <span id="rp-send-msg" style="font-size:.85rem;margin-left:6px"></span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /page-report -->
+
 </div><!-- /view-app -->
 
 <!-- ── LOADING OVERLAY ─────────────────────────────────────────────────────── -->
@@ -459,6 +569,7 @@ function showApp() {
   document.getElementById('view-app').style.display   = 'block';
   document.getElementById('s-user').textContent = _username;
   startDashAutoRefresh();
+  initReportTab();
 }
 
 // ── SSE ───────────────────────────────────────────────────────────────────────
@@ -948,16 +1059,156 @@ function showErr(msg) {
 
 // ── Page switching ────────────────────────────────────────────────────────────
 function showPage(name) {
-  document.getElementById('page-main').style.display = name === 'main' ? '' : 'none';
-  document.getElementById('page-logs').style.display = name === 'logs' ? '' : 'none';
-  document.getElementById('page-dash').style.display = name === 'dash' ? '' : 'none';
-  document.getElementById('tab-main').classList.toggle('active', name === 'main');
-  document.getElementById('tab-logs').classList.toggle('active', name === 'logs');
-  document.getElementById('tab-dash').classList.toggle('active', name === 'dash');
+  for (const p of ['main', 'logs', 'dash', 'report'])
+    document.getElementById('page-' + p).style.display = name === p ? '' : 'none';
+  for (const t of ['main', 'logs', 'dash', 'report'])
+    document.getElementById('tab-' + t).classList.toggle('active', name === t);
   if (name === 'logs') loadLogs();
   if (name === 'dash') {
     if (_allShipsCa.length === 0) fetchDashboardData();
     else renderDashboard();
+  }
+  if (name === 'report') loadReportConfig();
+}
+
+// ── Weekly report settings ────────────────────────────────────────────────────
+let _rpTzLoaded = false;
+
+// The tab stays hidden for non-admins; the server enforces this too.
+async function initReportTab() {
+  try {
+    const r = await fetch('/api/weekly/config').then(res => res.json());
+    if (r.ok && r.is_admin) document.getElementById('tab-report').style.display = '';
+  } catch (e) { /* tab stays hidden */ }
+}
+
+function _rpRenderStatus(st) {
+  if (!st) return;
+  const row = (k, v) => `<div style="display:flex;gap:10px;padding:3px 0">
+    <span style="min-width:130px;color:var(--muted)">${k}</span>
+    <span style="color:var(--text)">${v}</span></div>`;
+  const ok  = b => b ? '<span style="color:var(--green)">已配置</span>'
+                     : '<span style="color:var(--red)">未配置</span>';
+  const s = st.state || {};
+  document.getElementById('rp-status').innerHTML =
+    row('当前时间', st.now + ' (' + st.timezone + ')') +
+    row('本期区间', st.week_start + ' ~ ' + st.week_end) +
+    row('本期应发于', st.send_due_at) +
+    row('上次发送', s.last_sent_at ? `${s.last_sent_at}（${s.last_sent_week} 那一周，${s.last_sent_rows} 条）` : '—') +
+    row('上次抓取', s.last_fetch_at ? `${s.last_fetch_at}（${s.last_fetch_week} 那一周）` : '—') +
+    row('快照', st.snapshot_exists ? st.snapshot_file + ' 已就绪' : '尚未生成') +
+    row('自动发送', st.enabled ? '<span style="color:var(--green)">已启用</span>'
+                              : '<span style="color:var(--yellow)">已停用</span>') +
+    row('发件人', st.sender) +
+    row('SMTP', ok(st.smtp_configured)) +
+    row('Nimbus 凭证', ok(st.nimbus_configured));
+}
+
+async function loadReportConfig() {
+  const msg = document.getElementById('rp-msg');
+  msg.textContent = '';
+  try {
+    const r = await fetch('/api/weekly/config').then(res => res.json());
+    if (!r.ok) { msg.style.color = 'var(--red)'; msg.textContent = r.error || '载入失败'; return; }
+    const c = r.config;
+    document.getElementById('rp-recipients').value = (c.recipients || []).join('\n');
+    document.getElementById('rp-weekday').value    = c.send_weekday;
+    document.getElementById('rp-time').value =
+      String(c.send_hour).padStart(2, '0') + ':' + String(c.send_minute).padStart(2, '0');
+    document.getElementById('rp-tz').value      = c.timezone || '';
+    document.getElementById('rp-enabled').checked = !!c.enabled;
+
+    const st = r.status || {};
+    st.sender = r.sender; st.smtp_configured = r.smtp_configured;
+    st.nimbus_configured = r.nimbus_configured;
+    _rpRenderStatus(st);
+
+    // Non-admins can look but not save.
+    if (!r.is_admin) {
+      for (const id of ['rp-recipients','rp-weekday','rp-time','rp-tz','rp-enabled','rp-save'])
+        document.getElementById(id).disabled = true;
+      msg.style.color = 'var(--yellow)';
+      msg.textContent = '只读：你不在管理员名单里';
+    }
+
+    if (!_rpTzLoaded) {
+      _rpTzLoaded = true;
+      fetch('/api/weekly/timezones').then(res => res.json()).then(t => {
+        if (!t.ok) return;
+        document.getElementById('rp-tzlist').innerHTML =
+          t.timezones.map(z => `<option value="${z}">`).join('');
+      }).catch(() => {});
+    }
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '载入失败：' + e;
+  }
+}
+
+async function saveReportConfig() {
+  const msg = document.getElementById('rp-msg');
+  const btn = document.getElementById('rp-save');
+  const [h, m] = (document.getElementById('rp-time').value || '16:00').split(':');
+  btn.disabled = true;
+  msg.style.color = 'var(--muted)';
+  msg.textContent = '保存中…';
+  try {
+    const r = await fetch('/api/weekly/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        recipients:   document.getElementById('rp-recipients').value,
+        send_weekday: parseInt(document.getElementById('rp-weekday').value),
+        send_hour:    parseInt(h),
+        send_minute:  parseInt(m),
+        timezone:     document.getElementById('rp-tz').value.trim(),
+        enabled:      document.getElementById('rp-enabled').checked,
+      })
+    }).then(res => res.json());
+    if (r.ok) {
+      msg.style.color = 'var(--green)';
+      msg.textContent = '已保存，最迟 60 秒生效';
+      loadReportConfig();
+    } else {
+      msg.style.color = 'var(--red)';
+      msg.textContent = r.error || '保存失败';
+    }
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '保存失败：' + e;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function sendReportNow(force) {
+  const msg = document.getElementById('rp-send-msg');
+  const b1  = document.getElementById('rp-send');
+  const b2  = document.getElementById('rp-send-force');
+  if (!confirm(force ? '重新抓取上一周数据并发送，可能需要 1-3 分钟。继续？'
+                     : '立即按当前配置发送一封周报。继续？')) return;
+  b1.disabled = b2.disabled = true;
+  msg.style.color = 'var(--muted)';
+  msg.textContent = force ? '抓取并发送中，请稍候…' : '发送中…';
+  try {
+    const r = await fetch('/api/weekly/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({force_fetch: !!force})
+    }).then(res => res.json());
+    if (r.ok) {
+      msg.style.color = 'var(--green)';
+      msg.textContent = `已发送：${r.result.week_start} ~ ${r.result.week_end}，${r.result.rows} 条`;
+      loadReportConfig();
+    } else {
+      msg.style.color = 'var(--red)';
+      msg.textContent = r.error || '发送失败';
+    }
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '发送失败：' + e;
+  } finally {
+    b1.disabled = b2.disabled = false;
   }
 }
 
@@ -1039,6 +1290,7 @@ async function doLogout() {
   document.getElementById('prog-bar').style.width = '0%';
   document.getElementById('prog-label').textContent = '准备就绪';
   document.getElementById('prog-pct').textContent = '';
+  document.getElementById('tab-report').style.display = 'none';
   showPage('main');
   showLogin();
 }
