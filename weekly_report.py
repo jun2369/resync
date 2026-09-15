@@ -540,7 +540,8 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
     def api_weekly_run():
         if not _authorized():
             return jsonify({"ok": False, "error": "未授权"}), 401
-        body    = request.json or {}
+        # silent=True: a bare POST with no Content-Type would otherwise 415
+        body    = request.get_json(silent=True) or {}
         force   = bool(body.get("force_fetch"))
         cleanup = bool(body.get("cleanup", False))   # 手动触发默认保留快照
         try:
