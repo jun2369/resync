@@ -400,6 +400,9 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
       <div class="p-4" id="rp-status" style="font-size:.88rem;color:var(--muted)">加载中…</div>
     </div>
 
+    <!-- 与代码默认值的差异 -->
+    <div id="rp-overrides" style="display:none" class="mb-3"></div>
+
     <!-- 配置表单 -->
     <div class="g-card mb-3">
       <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem">
@@ -1104,6 +1107,46 @@ function _rpRenderStatus(st) {
     row('Nimbus 凭证', ok(st.nimbus_configured));
 }
 
+// Shows which fields the admin page has overridden, so the running config
+// can be compared against what the code/env alone would do.
+function _rpRenderOverrides(list) {
+  const box = document.getElementById('rp-overrides');
+  if (!list.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  const esc = s => String(s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  box.style.display = '';
+  box.innerHTML = `
+    <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.25);
+    border-radius:10px;padding:14px 18px">
+      <div style="font-weight:600;font-size:.88rem;margin-bottom:4px">
+        <i class="bi bi-exclamation-triangle me-2" style="color:var(--yellow)"></i>
+        以下 ${list.length} 项已被本页配置覆盖
+      </div>
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">
+        代码和环境变量里的值已不再生效。配置存在挂载卷上，重新部署不会改变它。
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:.83rem">
+        <thead><tr style="color:var(--muted)">
+          <th style="text-align:left;padding:4px 8px;font-weight:600">项目</th>
+          <th style="text-align:left;padding:4px 8px;font-weight:600">代码默认</th>
+          <th style="text-align:left;padding:4px 8px;font-weight:600">当前生效</th>
+        </tr></thead>
+        <tbody>${list.map(o => `
+          <tr>
+            <td style="padding:4px 8px;border-top:1px solid var(--border)">${esc(o.label)}</td>
+            <td style="padding:4px 8px;border-top:1px solid var(--border);color:var(--muted);
+            text-decoration:line-through">${esc(o.default)}</td>
+            <td style="padding:4px 8px;border-top:1px solid var(--border);color:var(--text);
+            font-weight:600">${esc(o.current)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+}
+
 async function loadReportConfig() {
   const msg = document.getElementById('rp-msg');
   msg.textContent = '';
@@ -1122,6 +1165,7 @@ async function loadReportConfig() {
     st.sender = r.sender; st.smtp_configured = r.smtp_configured;
     st.nimbus_configured = r.nimbus_configured;
     _rpRenderStatus(st);
+    _rpRenderOverrides(r.overrides || []);
 
     // Non-admins can look but not save.
     if (!r.is_admin) {

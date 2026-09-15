@@ -42,6 +42,34 @@ def load_dotenv():
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+def restore(base: str, token: str):
+    """把仓库里的快照推回线上。用于卷丢失后恢复，或撤销页面上的误改。"""
+    if not SNAP_FILE.exists():
+        print(f"找不到 {SNAP_FILE.name}，先跑一次 python sync_config.py")
+        sys.exit(1)
+
+    snap = json.loads(SNAP_FILE.read_text(encoding="utf-8"))
+    cfg  = snap.get("config") or {}
+    print(f"快照同步于 {snap.get('synced_at')}，内容：")
+    print(f"  每{WEEKDAYS[int(cfg.get('send_weekday', 1))]} "
+          f"{int(cfg.get('send_hour', 0)):02d}:{int(cfg.get('send_minute', 0)):02d} "
+          f"{cfg.get('timezone')}")
+    print(f"  收件人 {', '.join(cfg.get('recipients') or [])}")
+    print(f"  自动发送 {'启用' if cfg.get('enabled') else '停用'}")
+
+    if input(f"\n用它覆盖 {base} 上的当前配置？(yes/N) ").strip().lower() != "yes":
+        print("已取消")
+        return
+
+    r = req.post(f"{base}/api/weekly/config", json=cfg,
+                 headers={"X-Report-Token": token}, timeout=20)
+    if r.ok:
+        print("已恢复。再跑一次 python sync_config.py 确认。")
+    else:
+        print(f"失败 HTTP {r.status_code}: {r.text[:300]}")
+        sys.exit(1)
+
+
 def main():
     load_dotenv()
     dry = "--dry" in sys.argv
@@ -54,6 +82,10 @@ def main():
         print("然后在项目根目录建 .env 写上同样的值：")
         print("  REPORT_TRIGGER_TOKEN=<那个随机串>")
         sys.exit(1)
+
+    if "--restore" in sys.argv:
+        restore(base, token)
+        return
 
     try:
         r = req.get(f"{base}/api/weekly/config",

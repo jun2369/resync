@@ -111,6 +111,48 @@ def recipients() -> list:
     return [x for x in r if x]
 
 
+_FIELD_LABELS = {
+    "enabled":      "自动发送",
+    "timezone":     "时区",
+    "send_weekday": "星期几",
+    "send_hour":    "小时",
+    "send_minute":  "分钟",
+    "recipients":   "收件人",
+}
+
+
+def _pretty(field: str, value):
+    if field == "send_weekday":
+        try:
+            return WEEKDAY_NAMES[int(value)]
+        except Exception:
+            return str(value)
+    if field == "enabled":
+        return "启用" if value else "停用"
+    if field == "recipients":
+        v = value if isinstance(value, list) else [value]
+        return ", ".join(str(x) for x in v) or "（空）"
+    if field in ("send_hour", "send_minute"):
+        return f"{int(value):02d}"
+    return str(value)
+
+
+def overrides() -> list:
+    """页面配置里与环境变量/代码默认值不同的项。用来在管理页标出差异。"""
+    current = cfg()
+    out = []
+    for field, default in _DEFAULTS.items():
+        now = current.get(field)
+        if now != default:
+            out.append({
+                "field":   field,
+                "label":   _FIELD_LABELS.get(field, field),
+                "default": _pretty(field, default),
+                "current": _pretty(field, now),
+            })
+    return out
+
+
 def save_config(patch: dict) -> dict:
     """校验并写入配置。只接受已知字段，返回写入后的完整生效配置。"""
     global _cfg_cache, _cfg_mtime
@@ -470,7 +512,8 @@ def render_html(snap: dict) -> str:
     else:
         detail = ('<p style="color:#b45309;background:#fffbeb;border:1px solid #fcd34d;'
                   'border-radius:6px;padding:12px;font-size:13px">'
-                  '本期没有查到任何 shipment。如果这不符合预期，请检查抓取任务日志。</p>')
+                  'No shipments found for this period. If that is unexpected, '
+                  'check the fetch job logs.</p>')
 
     daily = "".join(
         f'<tr><td style="{_CSS_TD}">{escape(d)}</td>'
@@ -484,10 +527,10 @@ font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1118
 <div style="max-width:900px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;
 border-radius:10px;padding:28px">
 
-  <h1 style="margin:0 0 4px;font-size:20px;font-weight:650">Nimbus 周报</h1>
+  <h1 style="margin:0 0 4px;font-size:20px;font-weight:650">Nimbus Micra Weekly Report</h1>
   <p style="margin:0 0 20px;color:#6b7280;font-size:13px">
-    统计区间 <strong style="color:#111827">{escape(start)}</strong> ~
-    <strong style="color:#111827">{escape(end)}</strong>（周一至周日）
+    Period <strong style="color:#111827">{escape(start)}</strong> &ndash;
+    <strong style="color:#111827">{escape(end)}</strong> (Mon&ndash;Sun)
   </p>
 
   <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;
@@ -506,13 +549,13 @@ border-radius:10px;padding:28px">
   </div>
 
   <h2 style="margin:20px 0 0;font-size:15px;font-weight:650;padding-top:20px;
-  border-top:1px solid #e5e7eb">明细</h2>
+  border-top:1px solid #e5e7eb">Details</h2>
   {detail}
 
   <p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e5e7eb;
   color:#9ca3af;font-size:11px">
-    数据抓取于 {escape(str(snap.get("fetched_at", "")))} · 明细见附件 CSV ·
-    由 resync 自动发送
+    Data fetched {escape(str(snap.get("fetched_at", "")))} &middot; Full detail in the attached CSV &middot;
+    Sent automatically by resync
   </p>
 </div></body></html>"""
 
@@ -544,11 +587,12 @@ def send_email(snap: dict):
         raise RuntimeError("没有配置收件人")
     msg["From"]    = SENDER
     msg["To"]      = ", ".join(to)
-    msg["Subject"] = f"[Nimbus Micra Weekly Report] {start} ~ {end} · {n} 票"
+    msg["Subject"] = f"[Nimbus Micra Weekly Report] {start} ~ {end} · {n} shipments"
     msg.set_content(
-        f"Nimbus 周报 {start} ~ {end}\n\n"
+        f"Nimbus Micra Weekly Report — {start} to {end} (Mon-Sun)\n\n"
         f"Created Shipments: {n}\n\n"
-        f"明细见附件 CSV（此邮件的 HTML 版本包含完整表格）。"
+        f"Full detail is in the attached CSV; the HTML version of this "
+        f"message carries the same table inline."
     )
     msg.add_alternative(render_html(snap), subtype="html")
     msg.add_attachment(render_csv(snap), maintype="text", subtype="csv",
@@ -701,6 +745,9 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
                 "send_minute":  int(c["send_minute"]),
                 "recipients":   recipients(),
             },
+            # 页面配置覆盖掉环境变量/代码默认值的项，供页面标出差异
+            "overrides": overrides(),
+            "defaults":  _DEFAULTS,
             # 只读，供页面展示——凭证本身不返回
             "sender":            SENDER,
             "smtp_configured":   bool(SMTP_PASSWORD),
