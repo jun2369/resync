@@ -964,6 +964,12 @@ def _get_basic_info(token: str, sn: str) -> dict:
             return {
                 "clientName": d.get("clientName") or "",
                 "branchCode": d.get("branchCode") or "",
+                # Weekly report columns. The response has no "grossWeight";
+                # totalWeight is the only other weight it carries.
+                "hawbCount":        d.get("housesCount"),
+                "entryType":        d.get("entryType") or "",
+                "chargeableWeight": d.get("chargeableWeight"),
+                "grossWeight":      d.get("totalWeight"),
             }
         print(f"[dash-info] {sn}: HTTP {r.status_code} {r.text[:200]}", flush=True)
     except Exception as exc:

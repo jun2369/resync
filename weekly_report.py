@@ -182,16 +182,20 @@ def fetch_week(week_start: date, week_end: date, token: str = "") -> list:
 
     _log(f"{lo}~{hi}: globalSearch 翻了 {page} 页，命中 {len(found)} 个 SN")
 
-    # 补 client / branch —— 缓存里有就不重复调接口
+    # 补 client / branch / 重量等 —— 缓存里齐了就不重复调接口。
+    # 用 "entryType" 在不在做判据：clientName 早就有的老条目也缺这几个新字段，
+    # 只看 clientName 的话它们永远补不上。
     need = []
     for sn in found:
         with sn_cache_lock:
             ent = sn_cache.get(sn) or {}
-        if not ent.get("clientName") and not ent.get("not_found"):
+        if ent.get("not_found"):
+            continue
+        if not ent.get("clientName") or "entryType" not in ent:
             need.append(sn)
 
     if need:
-        _log(f"需要补 client/branch 的有 {len(need)} 个，开始并发拉取")
+        _log(f"需要补字段的有 {len(need)} 个，开始并发拉取")
 
         def _one(sn):
             info = get_basic_info(token, sn)
@@ -201,8 +205,9 @@ def fetch_week(week_start: date, week_end: date, token: str = "") -> list:
                 if info.get("not_found"):
                     ent["not_found"] = True
                 else:
-                    ent["clientName"] = info.get("clientName", "")
-                    ent["branchCode"] = info.get("branchCode", "")
+                    for k in ("clientName", "branchCode", "hawbCount",
+                              "entryType", "chargeableWeight", "grossWeight"):
+                        ent[k] = info.get(k)
 
         with ThreadPoolExecutor(max_workers=15) as pool:
             for fut in as_completed([pool.submit(_one, sn) for sn in need]):
@@ -219,11 +224,15 @@ def fetch_week(week_start: date, week_end: date, token: str = "") -> list:
         if ent.get("not_found"):
             continue
         rows.append({
-            "date":       ca[:10],
-            "sn":         sn,
-            "clientName": ent.get("clientName", ""),
-            "branchCode": ent.get("branchCode", ""),
-            "created_at": ca,
+            "date":             ca[:10],
+            "sn":               sn,
+            "clientName":       ent.get("clientName") or "",
+            "branchCode":       ent.get("branchCode") or "",
+            "hawbCount":        ent.get("hawbCount"),
+            "entryType":        ent.get("entryType") or "",
+            "chargeableWeight": ent.get("chargeableWeight"),
+            "grossWeight":      ent.get("grossWeight"),
+            "created_at":       ca,
         })
     rows.sort(key=lambda r: (r["created_at"], r["sn"]))
     return rows
@@ -263,6 +272,17 @@ _CSS_TH = ("padding:8px 10px;border-bottom:2px solid #d1d5db;font-size:12px;"
            "text-align:left;color:#374151;text-transform:uppercase;letter-spacing:.04em")
 
 
+def _num(v) -> str:
+    """数值格式化：整数去掉小数点，小数保留两位，空值显示 —。"""
+    if v is None or v == "":
+        return "—"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return str(int(f)) if f.is_integer() else f"{f:,.2f}"
+
+
 def _mini_table(title: str, counter: Counter) -> str:
     if not counter:
         return ""
@@ -289,6 +309,9 @@ def render_html(snap: dict) -> str:
     by_day    = Counter(r.get("date") or "—" for r in rows)
 
     if rows:
+        num_td = _CSS_TD + (";text-align:right;white-space:nowrap;"
+                            "font-variant-numeric:tabular-nums")
+        num_th = _CSS_TH + ";text-align:right"
         body = "".join(
             f'<tr>'
             f'<td style="{_CSS_TD};white-space:nowrap">{escape(r.get("date", ""))}</td>'
@@ -296,17 +319,26 @@ def render_html(snap: dict) -> str:
             f'{escape(r.get("sn", ""))}</td>'
             f'<td style="{_CSS_TD}">{escape(r.get("clientName") or "—")}</td>'
             f'<td style="{_CSS_TD};white-space:nowrap">{escape(r.get("branchCode") or "—")}</td>'
+            f'<td style="{num_td}">{_num(r.get("hawbCount"))}</td>'
+            f'<td style="{_CSS_TD};white-space:nowrap">{escape(r.get("entryType") or "—")}</td>'
+            f'<td style="{num_td}">{_num(r.get("chargeableWeight"))}</td>'
+            f'<td style="{num_td}">{_num(r.get("grossWeight"))}</td>'
             f'</tr>'
             for r in rows
         )
         detail = (
+            f'<div style="overflow-x:auto">'
             f'<table style="border-collapse:collapse;width:100%;margin-top:8px">'
             f'<thead><tr>'
             f'<th style="{_CSS_TH}">Date</th>'
             f'<th style="{_CSS_TH}">Shipment Number</th>'
             f'<th style="{_CSS_TH}">Client</th>'
             f'<th style="{_CSS_TH}">Branch</th>'
-            f'</tr></thead><tbody>{body}</tbody></table>'
+            f'<th style="{num_th}">HAWB Count</th>'
+            f'<th style="{_CSS_TH}">Entry Type</th>'
+            f'<th style="{num_th}">Chargeable Wt</th>'
+            f'<th style="{num_th}">Gross Wt</th>'
+            f'</tr></thead><tbody>{body}</tbody></table></div>'
         )
     else:
         detail = ('<p style="color:#b45309;background:#fffbeb;border:1px solid #fcd34d;'
@@ -361,10 +393,13 @@ border-radius:10px;padding:28px">
 def render_csv(snap: dict) -> bytes:
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Date", "Shipment Number", "Client", "Branch"])
+    w.writerow(["Date", "Shipment Number", "Client", "Branch",
+                "HAWB Count", "Entry Type", "Chargeable Weight", "Gross Weight"])
     for r in snap.get("rows", []):
         w.writerow([r.get("date", ""), r.get("sn", ""),
-                    r.get("clientName", ""), r.get("branchCode", "")])
+                    r.get("clientName") or "", r.get("branchCode") or "",
+                    r.get("hawbCount"), r.get("entryType") or "",
+                    r.get("chargeableWeight"), r.get("grossWeight")])
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
@@ -500,53 +535,6 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
         if not _authorized():
             return jsonify({"ok": False, "error": "未授权"}), 401
         return jsonify({"ok": True, "status": status()})
-
-    @app.route("/api/weekly/probe")
-    def api_weekly_probe():
-        """临时排查用：返回 getShipmentBasicInfo 的完整原始字段，用来确认
-        HAWB Count / Entry Type / Chargeable Weight / Gross Weight 叫什么名字。
-        字段确定后这个端点就可以删掉。"""
-        if not _authorized():
-            return jsonify({"ok": False, "error": "未授权"}), 401
-
-        sn = (request.args.get("sn") or "297-67729502").strip()
-        tok = session.get("_tok") or _nimbus_login()
-        if not tok:
-            return jsonify({"ok": False, "error": "拿不到 Nimbus token"}), 500
-
-        try:
-            r = req.get(
-                "https://admin.nimbusgroup.us"
-                "/api/admin/operate/shipment-basic/getShipmentBasicInfo",
-                params={"shipmentNumber": sn},
-                timeout=15,
-                headers={
-                    "Authorization": f"Bearer {tok}",
-                    "Accept": "application/json, text/plain, */*",
-                    "Referer": "https://admin.nimbusgroup.us/shipment/basic-info",
-                },
-            )
-            body = r.json()
-        except Exception as exc:
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
-
-        data = body.get("data") if isinstance(body, dict) else None
-        fields = {}
-        if isinstance(data, dict):
-            for k, v in sorted(data.items()):
-                fields[k] = v if not isinstance(v, (dict, list)) else json.dumps(
-                    v, ensure_ascii=False)[:200]
-            _log(f"probe {sn}: {len(fields)} 个字段 -> {sorted(fields)}")
-
-        return jsonify({
-            "ok":          True,
-            "sn":          sn,
-            "http_status": r.status_code,
-            "field_count": len(fields),
-            "field_names": sorted(fields),
-            "fields":      fields,
-            "raw":         body,
-        })
 
     @app.route("/api/weekly/run", methods=["POST"])
     def api_weekly_run():
