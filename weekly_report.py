@@ -19,7 +19,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from html import escape
 from pathlib import Path
@@ -45,7 +45,37 @@ ADMINS = {e.strip().lower()
 LOG_DIR     = Path("logs")
 STATE_FILE  = LOG_DIR / "weekly_report_state.json"
 CONFIG_FILE = LOG_DIR / "weekly_report_config.json"
+AUDIT_FILE  = LOG_DIR / "weekly_report_audit.json"
 TICK_SEC    = int(os.environ.get("REPORT_TICK_SEC", "60"))
+AUDIT_KEEP_DAYS = int(os.environ.get("REPORT_AUDIT_KEEP_DAYS", "20"))
+
+# 时区下拉里置顶的常用项。其余 IANA 时区仍可从完整列表里选。
+COMMON_TIMEZONES = [
+    ("America/Chicago",     "美国中部"),
+    ("America/New_York",    "美国东部"),
+    ("America/Los_Angeles", "美国西部"),
+    ("America/Denver",      "美国山区"),
+    ("America/Phoenix",     "美国亚利桑那（不用夏令时）"),
+    ("America/Anchorage",   "美国阿拉斯加"),
+    ("Pacific/Honolulu",    "夏威夷"),
+    ("Asia/Shanghai",       "中国"),
+    ("Asia/Hong_Kong",      "香港"),
+    ("Asia/Taipei",         "台北"),
+    ("Asia/Tokyo",          "日本"),
+    ("Asia/Seoul",          "韩国"),
+    ("Asia/Singapore",      "新加坡"),
+    ("Asia/Bangkok",        "泰国"),
+    ("Asia/Kolkata",        "印度"),
+    ("Asia/Dubai",          "阿联酋"),
+    ("Europe/London",       "英国"),
+    ("Europe/Paris",        "欧洲中部"),
+    ("Europe/Amsterdam",    "荷兰"),
+    ("Europe/Moscow",       "俄罗斯"),
+    ("Australia/Sydney",    "澳大利亚东部"),
+    ("America/Sao_Paulo",   "巴西"),
+    ("America/Mexico_City", "墨西哥"),
+    ("UTC",                 "协调世界时"),
+]
 
 # ── 可在管理页改的配置 ────────────────────────────────────────────────────────
 # 优先级：配置文件 > 环境变量 > 这里的默认值。
@@ -153,9 +183,54 @@ def overrides() -> list:
     return out
 
 
-def save_config(patch: dict) -> dict:
+_audit_lock = threading.Lock()
+
+
+def _read_audit() -> list:
+    try:
+        with open(AUDIT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _append_audit(actor: str, changes: list):
+    """记一条配置变更，并顺手清掉超过保留期的旧条目。"""
+    if not changes:
+        return
+    entry = {
+        "at":      datetime.now(_tz()).isoformat(timespec="seconds"),
+        "at_utc":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "actor":   actor or "未知",
+        "changes": changes,
+    }
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=AUDIT_KEEP_DAYS)).isoformat()
+    with _audit_lock:
+        entries = [e for e in _read_audit() if (e.get("at_utc") or "") >= cutoff]
+        entries.insert(0, entry)
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = AUDIT_FILE.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(entries, f, ensure_ascii=False, indent=2)
+            tmp.replace(AUDIT_FILE)
+        except Exception as exc:
+            print(f"[weekly] 变更日志写入失败: {exc!r}", flush=True)
+
+
+def audit_log(limit: int = 100) -> list:
+    """保留期内的配置变更记录，最新在前。"""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=AUDIT_KEEP_DAYS)).isoformat()
+    with _audit_lock:
+        entries = [e for e in _read_audit() if (e.get("at_utc") or "") >= cutoff]
+    return entries[:limit]
+
+
+def save_config(patch: dict, actor: str = "") -> dict:
     """校验并写入配置。只接受已知字段，返回写入后的完整生效配置。"""
     global _cfg_cache, _cfg_mtime
+    before = cfg()
     clean = {}
 
     if "enabled" in patch:
@@ -215,7 +290,18 @@ def save_config(patch: dict) -> dict:
         except OSError:
             _cfg_mtime = None
 
-    _log(f"配置已更新: {clean}")
+    after = cfg()
+    changes = [{
+        "field": f,
+        "label": _FIELD_LABELS.get(f, f),
+        "from":  _pretty(f, before.get(f)),
+        "to":    _pretty(f, after.get(f)),
+    } for f in clean if before.get(f) != after.get(f)]
+
+    if changes:
+        _append_audit(actor, changes)
+        _log(f"配置已更新（{actor or '未知'}）: "
+             + "；".join(f"{c['label']} {c['from']} -> {c['to']}" for c in changes))
     _rearm_if_due_ahead()
     return cfg()
 
@@ -786,6 +872,8 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
             # 页面配置覆盖掉环境变量/代码默认值的项，供页面标出差异
             "overrides": overrides(),
             "defaults":  _DEFAULTS,
+            "audit":     audit_log(),
+            "audit_keep_days": AUDIT_KEEP_DAYS,
             # 只读，供页面展示——凭证本身不返回
             "sender":            SENDER,
             "smtp_configured":   bool(SMTP_PASSWORD),
@@ -799,8 +887,10 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
         if denied:
             return denied
         patch = request.get_json(silent=True) or {}
+        actor = session.get("_usr") or (
+            "sync_config (token)" if request.headers.get("X-Report-Token") else "")
         try:
-            new_cfg = save_config(patch)
+            new_cfg = save_config(patch, actor=actor)
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{exc}"}), 400
         return jsonify({
@@ -814,6 +904,7 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
                 "recipients":   recipients(),
             },
             "status": status(),
+            "audit":  audit_log(),
         })
 
     @app.route("/api/weekly/reset", methods=["POST"])
@@ -837,7 +928,10 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
         if denied:
             return denied
         import zoneinfo
-        return jsonify({"ok": True, "timezones": sorted(zoneinfo.available_timezones())})
+        allz = sorted(zoneinfo.available_timezones())
+        common = [{"value": z, "label": n} for z, n in COMMON_TIMEZONES
+                  if z in allz or z == "UTC"]
+        return jsonify({"ok": True, "common": common, "timezones": allz})
 
     @app.route("/api/weekly/run", methods=["POST"])
     def api_weekly_run():

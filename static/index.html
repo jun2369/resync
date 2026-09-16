@@ -438,10 +438,9 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
           </div>
           <div class="col-md-4">
             <label class="form-label" style="font-size:.85rem;font-weight:600">时区</label>
-            <input id="rp-tz" list="rp-tzlist" class="form-control"
-              style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:.86rem"
-              placeholder="America/Chicago">
-            <datalist id="rp-tzlist"></datalist>
+            <select id="rp-tz" class="form-select"
+              style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:.86rem">
+            </select>
           </div>
         </div>
 
@@ -501,6 +500,16 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
           <span id="rp-send-msg" style="font-size:.85rem;margin-left:6px"></span>
         </div>
       </div>
+    </div>
+
+    <!-- 配置变更日志 -->
+    <div class="g-card mb-4">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem;
+      display:flex;justify-content:space-between;align-items:center">
+        <span><i class="bi bi-clock-history me-2" style="color:var(--accent)"></i>配置变更日志</span>
+        <span id="rp-audit-keep" style="font-size:.76rem;color:var(--muted);font-weight:400"></span>
+      </div>
+      <div class="p-4" id="rp-audit" style="font-size:.85rem;color:var(--muted)">加载中…</div>
     </div>
 
   </div><!-- /page-report -->
@@ -1081,8 +1090,6 @@ function showPage(name) {
 }
 
 // ── Weekly report settings ────────────────────────────────────────────────────
-let _rpTzLoaded = false;
-
 // The tab stays hidden for non-admins; the server enforces this too.
 async function initReportTab() {
   try {
@@ -1115,6 +1122,65 @@ function _rpRenderStatus(st) {
 
 // Shows which fields the admin page has overridden, so the running config
 // can be compared against what the code/env alone would do.
+let _rpTzCache = null;
+
+// The select must be filled before its value is set, or the saved timezone
+// silently falls back to whatever option happens to be first.
+async function _rpFillTimezones(current) {
+  const sel = document.getElementById('rp-tz');
+  if (!_rpTzCache) {
+    try {
+      const t = await fetch('/api/weekly/timezones').then(res => res.json());
+      if (t.ok) _rpTzCache = t;
+    } catch (e) { /* fall through to the single-option fallback */ }
+  }
+  const esc = v => String(v).replace(/[&<>"]/g,
+    ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+  if (!_rpTzCache) {
+    sel.innerHTML = `<option value="${esc(current)}">${esc(current)}</option>`;
+    return;
+  }
+  const common = (_rpTzCache.common || []).map(z =>
+    `<option value="${esc(z.value)}">${esc(z.label)} — ${esc(z.value)}</option>`).join('');
+  const all = (_rpTzCache.timezones || []).map(z =>
+    `<option value="${esc(z)}">${esc(z)}</option>`).join('');
+  sel.innerHTML = `<optgroup label="常用">${common}</optgroup>` +
+                  `<optgroup label="全部时区">${all}</optgroup>`;
+  sel.value = current;
+  if (!sel.value && current) {
+    sel.insertAdjacentHTML('afterbegin',
+      `<option value="${esc(current)}">${esc(current)}</option>`);
+    sel.value = current;
+  }
+}
+
+function _rpRenderAudit(list, keepDays) {
+  const box  = document.getElementById('rp-audit');
+  const keep = document.getElementById('rp-audit-keep');
+  if (keepDays) keep.textContent = `保留最近 ${keepDays} 天`;
+  if (!list.length) {
+    box.innerHTML = '<span style="color:var(--muted)">暂无变更记录</span>';
+    return;
+  }
+  const esc = v => String(v).replace(/[&<>"]/g,
+    ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+  box.innerHTML = list.map(e => `
+    <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:baseline;margin-bottom:5px">
+        <span style="color:var(--text);font-weight:600;font-size:.84rem">${esc(e.actor)}</span>
+        <span style="color:var(--muted);font-size:.78rem;font-family:ui-monospace,Menlo,Consolas,monospace">
+          ${esc((e.at || '').replace('T', ' '))}</span>
+      </div>
+      ${e.changes.map(c => `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;padding:2px 0 2px 2px">
+          <span style="min-width:62px;color:var(--muted);font-size:.8rem">${esc(c.label)}</span>
+          <span style="color:var(--muted);text-decoration:line-through;font-size:.8rem">${esc(c.from)}</span>
+          <span style="color:var(--muted);font-size:.8rem">&rarr;</span>
+          <span style="color:var(--text);font-size:.8rem;font-weight:600">${esc(c.to)}</span>
+        </div>`).join('')}
+    </div>`).join('');
+}
+
 function _rpRenderOverrides(list) {
   const box = document.getElementById('rp-overrides');
   if (!list.length) {
@@ -1164,8 +1230,9 @@ async function loadReportConfig() {
     document.getElementById('rp-weekday').value    = c.send_weekday;
     document.getElementById('rp-time').value =
       String(c.send_hour).padStart(2, '0') + ':' + String(c.send_minute).padStart(2, '0');
-    document.getElementById('rp-tz').value      = c.timezone || '';
     document.getElementById('rp-enabled').checked = !!c.enabled;
+    await _rpFillTimezones(c.timezone || '');
+    _rpRenderAudit(r.audit || [], r.audit_keep_days);
 
     const st = r.status || {};
     st.sender = r.sender; st.smtp_configured = r.smtp_configured;
@@ -1181,14 +1248,6 @@ async function loadReportConfig() {
       msg.textContent = '只读：你不在管理员名单里';
     }
 
-    if (!_rpTzLoaded) {
-      _rpTzLoaded = true;
-      fetch('/api/weekly/timezones').then(res => res.json()).then(t => {
-        if (!t.ok) return;
-        document.getElementById('rp-tzlist').innerHTML =
-          t.timezones.map(z => `<option value="${z}">`).join('');
-      }).catch(() => {});
-    }
   } catch (e) {
     msg.style.color = 'var(--red)';
     msg.textContent = '载入失败：' + e;
@@ -1218,6 +1277,7 @@ async function saveReportConfig() {
     if (r.ok) {
       msg.style.color = 'var(--green)';
       msg.textContent = '已保存，最迟 60 秒生效';
+      if (r.audit) _rpRenderAudit(r.audit);
       loadReportConfig();
     } else {
       msg.style.color = 'var(--red)';
