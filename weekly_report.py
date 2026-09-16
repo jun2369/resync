@@ -216,7 +216,31 @@ def save_config(patch: dict) -> dict:
             _cfg_mtime = None
 
     _log(f"配置已更新: {clean}")
+    _rearm_if_due_ahead()
     return cfg()
+
+
+def _rearm_if_due_ahead():
+    """保存配置后，若本期新的发送时刻还没到，就清掉已发标记，让它到点再发一次。
+
+    这样「今天正好是选定的星期几、设的时间还没到」就会在今天发出，不受本期
+    此前发过几次影响。时刻已经过去则不动——否则改个收件人就会立刻补发一封。
+    """
+    now = datetime.now(_tz())
+    week_start, _ = last_week_range(now.date())
+    key = week_start.isoformat()
+    due = send_moment(week_start)
+    if due <= now:
+        return None
+    with _state_lock:
+        st = _read_state()
+        if st.get("last_sent_week") != key:
+            return None            # 本期本来就没发过，无需处理
+        for k in ("last_sent_week", "last_sent_at", "last_sent_rows"):
+            st.pop(k, None)
+        _write_state(st)
+    _log(f"发送时刻 {due:%Y-%m-%d %H:%M %Z} 尚未到达，已重置本期发送标记，届时会再发一次")
+    return due
 
 
 def _log(msg: str):
@@ -635,30 +659,39 @@ def _tick():
     week_start, week_end = last_week_range(now.date())
     key = week_start.isoformat()
 
+    # 抓取可能要几分钟。锁只在读写状态文件时短暂持有，不跨越抓取/发送，
+    # 否则这期间管理页保存配置会被卡住。_loop 是单线程，不存在 tick 重入。
     with _state_lock:
         st = _read_state()
 
-        # 1) 抓取：新的一周一开始，上一周的数据就固定了，随时可抓
-        if st.get("last_fetch_week") != key:
-            try:
-                build_snapshot(week_start, week_end)
+    # 1) 抓取：新的一周一开始，上一周的数据就固定了，随时可抓
+    if st.get("last_fetch_week") != key:
+        try:
+            build_snapshot(week_start, week_end)
+            with _state_lock:
+                st = _read_state()
                 st["last_fetch_week"] = key
                 st["last_fetch_at"]   = now.isoformat(timespec="seconds")
                 _write_state(st)
-            except Exception as exc:
-                _log(f"抓取失败（下次唤醒重试）: {exc!r}")
+        except Exception as exc:
+            _log(f"抓取失败（下次唤醒重试）: {exc!r}")
 
-        # 2) 发送：到点且本期还没发过
-        due = send_moment(week_start)
-        if st.get("last_sent_week") != key and now >= due:
-            try:
-                res = run_once(week_start, week_end)
+    # 2) 发送：到点且本期还没发过。重新读一次状态，保证能看到抓取期间
+    #    管理页保存配置触发的重新武装。
+    with _state_lock:
+        st = _read_state()
+    due = send_moment(week_start)
+    if st.get("last_sent_week") != key and now >= due:
+        try:
+            res = run_once(week_start, week_end)
+            with _state_lock:
+                st = _read_state()
                 st["last_sent_week"] = key
                 st["last_sent_at"]   = now.isoformat(timespec="seconds")
                 st["last_sent_rows"] = res["rows"]
                 _write_state(st)
-            except Exception as exc:
-                _log(f"发送失败（下次唤醒重试）: {exc!r}")
+        except Exception as exc:
+            _log(f"发送失败（下次唤醒重试）: {exc!r}")
 
 
 def _loop():
