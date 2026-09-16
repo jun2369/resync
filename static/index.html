@@ -481,7 +481,9 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
       </div>
       <div class="p-4">
         <div style="font-size:.82rem;color:var(--muted);margin-bottom:12px">
-          立刻按当前配置发一封上一周的周报，不影响自动发送的排期。
+          立刻按当前配置发一封上一周的周报，不影响自动发送的排期。<br>
+          「重置本期发送状态」会清掉本期的已发送标记，让调度器到点再发一次——
+          用于验证自动触发。本期发过之后光改时间是不会重新触发的。
         </div>
         <div class="d-flex gap-2 align-items-center flex-wrap">
           <button class="g-btn" id="rp-send" onclick="sendReportNow(false)"
@@ -491,6 +493,10 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
           <button class="g-btn" id="rp-send-force" onclick="sendReportNow(true)"
             style="background:var(--card);color:var(--text);border:1px solid var(--border)">
             <i class="bi bi-arrow-repeat"></i>重新抓取后发送
+          </button>
+          <button class="g-btn" id="rp-reset" onclick="resetReportState()"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border)">
+            <i class="bi bi-arrow-counterclockwise"></i>重置本期发送状态
           </button>
           <span id="rp-send-msg" style="font-size:.85rem;margin-left:6px"></span>
         </div>
@@ -1222,6 +1228,27 @@ async function saveReportConfig() {
     msg.textContent = '保存失败：' + e;
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function resetReportState() {
+  const msg = document.getElementById('rp-send-msg');
+  if (!confirm('清掉本期的已发送标记？调度器会在配置的时刻重新发送一次。')) return;
+  msg.style.color = 'var(--muted)';
+  msg.textContent = '重置中…';
+  try {
+    const r = await fetch('/api/weekly/reset', {method: 'POST'}).then(res => res.json());
+    if (r.ok) {
+      msg.style.color = 'var(--green)';
+      msg.textContent = '已重置，到点会自动发送（调度器每 60 秒检查一次）';
+      loadReportConfig();
+    } else {
+      msg.style.color = 'var(--red)';
+      msg.textContent = r.error || '重置失败';
+    }
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '重置失败：' + e;
   }
 }
 

@@ -783,6 +783,21 @@ def init(app, *, nimbus, get_basic_info, sn_cache, sn_cache_lock, save_sn_cache)
             "status": status(),
         })
 
+    @app.route("/api/weekly/reset", methods=["POST"])
+    def api_weekly_reset():
+        """清掉本期的已发送标记，让调度器到点重新发一次。
+        用来验证「到点自动触发」——否则本期发过之后改时间是不会再触发的。"""
+        denied = _deny()
+        if denied:
+            return denied
+        with _state_lock:
+            st = _read_state()
+            cleared = {k: st.pop(k, None)
+                       for k in ("last_sent_week", "last_sent_at", "last_sent_rows")}
+            _write_state(st)
+        _log(f"已重置发送标记（原值 {cleared['last_sent_week']}），到点会重新发送")
+        return jsonify({"ok": True, "cleared": cleared, "status": status()})
+
     @app.route("/api/weekly/timezones")
     def api_weekly_timezones():
         denied = _deny()
