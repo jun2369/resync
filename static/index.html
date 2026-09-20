@@ -1198,20 +1198,14 @@ function _rpRenderOverrides(list) {
         <i class="bi bi-exclamation-triangle me-2" style="color:var(--yellow)"></i>
         以下 ${list.length} 项已被本页配置覆盖
       </div>
-      <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">
-        代码和环境变量里的值已不再生效。配置存在挂载卷上，重新部署不会改变它。
-      </div>
-      <table style="width:100%;border-collapse:collapse;font-size:.83rem">
+      <table style="width:100%;border-collapse:collapse;font-size:.83rem;margin-top:8px">
         <thead><tr style="color:var(--muted)">
           <th style="text-align:left;padding:4px 8px;font-weight:600">项目</th>
-          <th style="text-align:left;padding:4px 8px;font-weight:600">代码默认</th>
           <th style="text-align:left;padding:4px 8px;font-weight:600">当前生效</th>
         </tr></thead>
         <tbody>${list.map(o => `
           <tr>
             <td style="padding:4px 8px;border-top:1px solid var(--border)">${esc(o.label)}</td>
-            <td style="padding:4px 8px;border-top:1px solid var(--border);color:var(--muted);
-            text-decoration:line-through">${esc(o.default)}</td>
             <td style="padding:4px 8px;border-top:1px solid var(--border);color:var(--text);
             font-weight:600">${esc(o.current)}</td>
           </tr>`).join('')}</tbody>
