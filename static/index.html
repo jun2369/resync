@@ -166,6 +166,9 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     <button class="g-tab" id="tab-report" onclick="showPage('report')" style="display:none">
       <i class="bi bi-envelope-paper me-1"></i>周报设置
     </button>
+    <button class="g-tab" id="tab-notify" onclick="showPage('notify')" style="display:none">
+      <i class="bi bi-bell me-1"></i>通知设置
+    </button>
   </div>
   </div>
 
@@ -500,6 +503,59 @@ body { background: var(--bg); color: var(--text); font-family: "Segoe UI", syste
     </div>
 
   </div><!-- /page-report -->
+
+  <!-- ── Page: Scan alert settings ── -->
+  <div id="page-notify" style="display:none;max-width:860px;margin:0 auto">
+
+    <div class="g-card mb-3">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem">
+        <i class="bi bi-activity me-2" style="color:var(--accent)"></i>自动扫描状态
+      </div>
+      <div class="p-4" id="nt-status" style="font-size:.88rem;color:var(--muted)">加载中…</div>
+    </div>
+
+    <div class="g-card mb-3">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:.95rem">
+        <i class="bi bi-envelope-exclamation me-2" style="color:var(--accent)"></i>失败告警收件人
+      </div>
+      <div class="p-4">
+        <div class="mb-4">
+          <label class="form-label" style="font-size:.85rem;font-weight:600">收件人</label>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">
+            一行一个，或用逗号分隔。自动扫描发现失败记录时发给这些地址；留空则只扫描不发信。
+          </div>
+          <textarea id="nt-recipients" rows="4" class="form-control"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:.86rem;font-family:ui-monospace,Menlo,Consolas,monospace"
+            placeholder="name@example.com"></textarea>
+        </div>
+
+        <div class="form-check mb-4">
+          <input class="form-check-input" type="checkbox" id="nt-enabled">
+          <label class="form-check-label" for="nt-enabled" style="font-size:.86rem">
+            启用每小时自动扫描
+            <span style="color:var(--muted);font-size:.8rem">（关闭后后台不再扫描，手动扫描不受影响）</span>
+          </label>
+        </div>
+
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+          <button class="g-btn" id="nt-save" onclick="saveNotifyConfig()"
+            style="background:var(--accent);color:#fff">
+            <i class="bi bi-check-lg"></i>保存配置
+          </button>
+          <button class="g-btn" onclick="loadNotifyConfig()"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border)">
+            <i class="bi bi-arrow-clockwise"></i>重新载入
+          </button>
+          <button class="g-btn" id="nt-run" onclick="runNotifyScan()"
+            style="background:var(--card);color:var(--text);border:1px solid var(--border)">
+            <i class="bi bi-search"></i>立即扫描一次
+          </button>
+          <span id="nt-msg" style="font-size:.85rem;margin-left:6px"></span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /page-notify -->
 
 </div><!-- /view-app -->
 
@@ -1064,9 +1120,9 @@ function showErr(msg) {
 
 // ── Page switching ────────────────────────────────────────────────────────────
 function showPage(name) {
-  for (const p of ['main', 'logs', 'dash', 'report'])
+  for (const p of ['main', 'logs', 'dash', 'report', 'notify'])
     document.getElementById('page-' + p).style.display = name === p ? '' : 'none';
-  for (const t of ['main', 'logs', 'dash', 'report'])
+  for (const t of ['main', 'logs', 'dash', 'report', 'notify'])
     document.getElementById('tab-' + t).classList.toggle('active', name === t);
   if (name === 'logs') loadLogs();
   if (name === 'dash') {
@@ -1074,6 +1130,119 @@ function showPage(name) {
     else renderDashboard();
   }
   if (name === 'report') loadReportConfig();
+  if (name === 'notify') loadNotifyConfig();
+}
+
+// ── Scan alert settings ───────────────────────────────────────────────────────
+function _ntRenderStatus(st) {
+  if (!st) return;
+  const row = (k, v) => `<div style="display:flex;gap:10px;padding:3px 0">
+    <span style="min-width:130px;color:var(--muted)">${k}</span>
+    <span style="color:var(--text)">${v}</span></div>`;
+  const s = st.state || {};
+  const c = s.last_counts || {};
+  const parts = [];
+  if (c.ships      !== undefined) parts.push(`HAWB Milestone ${c.ships}`);
+  if (c.ships_info !== undefined) parts.push(`Shipment Info ${c.ships_info}`);
+  if (c.ships_mawb !== undefined) parts.push(`MAWB Milestone ${c.ships_mawb}`);
+  const last = s.last_run_at
+    ? `${s.last_run_at}（用时 ${s.last_took_s ?? '—'}s）`
+    : '尚未执行';
+  const found = s.last_run_at
+    ? (s.last_total
+        ? `<span style="color:var(--red)">${s.last_total} 个失败</span>` +
+          (parts.length ? `<span style="color:var(--muted)"> — ${parts.join('，')}</span>` : '')
+        : '<span style="color:var(--green)">无失败记录</span>')
+    : '—';
+  document.getElementById('nt-status').innerHTML =
+    row('当前时间', st.now) +
+    row('下次扫描', st.next_run_at + '（每个整点）') +
+    row('上次扫描', last) +
+    row('上次结果', found) +
+    row('告警邮件', s.last_run_at ? (s.last_mailed ? '已发送' : '未发送') : '—') +
+    row('自动扫描', st.enabled ? '<span style="color:var(--green)">已启用</span>'
+                              : '<span style="color:var(--yellow)">已停用</span>') +
+    (st.running ? row('当前', '<span style="color:var(--yellow)">扫描进行中…</span>') : '');
+}
+
+async function loadNotifyConfig() {
+  const msg = document.getElementById('nt-msg');
+  msg.textContent = '';
+  try {
+    const r = await fetch('/api/notify/config').then(res => res.json());
+    if (!r.ok) { msg.style.color = 'var(--red)'; msg.textContent = r.error || '载入失败'; return; }
+    document.getElementById('nt-recipients').value = (r.config.recipients || []).join('\n');
+    document.getElementById('nt-enabled').checked  = !!r.config.enabled;
+    _ntRenderStatus(r.status);
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '载入失败：' + e;
+  }
+}
+
+async function saveNotifyConfig() {
+  const msg = document.getElementById('nt-msg');
+  const btn = document.getElementById('nt-save');
+  btn.disabled = true;
+  msg.style.color = 'var(--muted)';
+  msg.textContent = '保存中…';
+  try {
+    const r = await fetch('/api/notify/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        recipients: document.getElementById('nt-recipients').value,
+        enabled:    document.getElementById('nt-enabled').checked,
+      })
+    }).then(res => res.json());
+    if (r.ok) {
+      msg.style.color = 'var(--green)';
+      msg.textContent = '已保存';
+      _ntRenderStatus(r.status);
+    } else {
+      msg.style.color = 'var(--red)';
+      msg.textContent = r.error || '保存失败';
+    }
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '保存失败：' + e;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runNotifyScan() {
+  const msg = document.getElementById('nt-msg');
+  const btn = document.getElementById('nt-run');
+  if (!confirm('立即执行一次后台扫描，可能需要几分钟。发现失败会照常发告警邮件。继续？')) return;
+  btn.disabled = true;
+  msg.style.color = 'var(--muted)';
+  msg.textContent = '扫描中，请稍候…';
+  try {
+    const r = await fetch('/api/notify/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({notify: true})
+    }).then(res => res.json());
+    if (!r.ok) {
+      msg.style.color = 'var(--red)';
+      msg.textContent = r.error || '扫描失败';
+    } else if (r.result.skipped) {
+      msg.style.color = 'var(--yellow)';
+      msg.textContent = r.result.reason;
+    } else {
+      msg.style.color = r.result.total ? 'var(--yellow)' : 'var(--green)';
+      msg.textContent = r.result.total
+        ? `发现 ${r.result.total} 个失败${r.result.mailed ? '，已发送告警邮件' : '（未发信）'}`
+        : '扫描完成，未发现失败记录';
+      loadNotifyConfig();
+    }
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '扫描失败：' + e;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Weekly report settings ────────────────────────────────────────────────────
@@ -1081,8 +1250,11 @@ function showPage(name) {
 async function initReportTab() {
   try {
     const r = await fetch('/api/weekly/config').then(res => res.json());
-    if (r.ok && r.is_admin) document.getElementById('tab-report').style.display = '';
-  } catch (e) { /* tab stays hidden */ }
+    if (r.ok && r.is_admin) {
+      document.getElementById('tab-report').style.display = '';
+      document.getElementById('tab-notify').style.display = '';
+    }
+  } catch (e) { /* tabs stay hidden */ }
 }
 
 function _rpRenderStatus(st) {
@@ -1377,6 +1549,7 @@ async function doLogout() {
   document.getElementById('prog-label').textContent = '准备就绪';
   document.getElementById('prog-pct').textContent = '';
   document.getElementById('tab-report').style.display = 'none';
+  document.getElementById('tab-notify').style.display = 'none';
   showPage('main');
   showLogin();
 }

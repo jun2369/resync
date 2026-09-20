@@ -1718,6 +1718,16 @@ except Exception as _exc:
     print(f"[weekly] 初始化失败，周报功能未启用: {_exc!r}", flush=True)
 
 
+# 自动扫描：复用 _scan_worker，配上周报那套无人值守登录，
+# 所以没人登录也能跑。失败告警发给「通知设置」里的收件人。
+try:
+    import auto_scan
+    import weekly_report as _wr
+    auto_scan.init(app, scan_worker=_scan_worker, nimbus_login=_wr._nimbus_login)
+except Exception as _exc:
+    print(f"[autoscan] 初始化失败，自动扫描未启用: {_exc!r}", flush=True)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

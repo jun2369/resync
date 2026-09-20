@@ -14,24 +14,23 @@ import io
 import json
 import os
 import re
-import smtplib
 import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
-from email.message import EmailMessage
 from html import escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests as req
 
+import mailer
+
 # ── 凭证与固定项：只走环境变量，不进配置文件，也不在管理页上显示 ──────────────
-SMTP_HOST     = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT     = int(os.environ.get("SMTP_PORT", "587"))
-SENDER        = os.environ.get("REPORT_SENDER", "jma2369@gmail.com")
-SMTP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+# SMTP 相关全部在 mailer 里读，这里只是转个名字给状态接口用。
+SENDER        = mailer.SENDER
+SMTP_PASSWORD = mailer.PASSWORD
 
 NIMBUS_USERNAME = os.environ.get("NIMBUS_USERNAME", "")
 NIMBUS_PASSWORD = os.environ.get("NIMBUS_PASSWORD", "")
@@ -685,33 +684,20 @@ def render_csv(snap: dict) -> bytes:
 
 # ── 发信 ──────────────────────────────────────────────────────────────────────
 def send_email(snap: dict):
-    if not SMTP_PASSWORD:
-        raise RuntimeError("未配置 GMAIL_APP_PASSWORD")
-
     start, end = snap.get("week_start", ""), snap.get("week_end", "")
     n = len(snap.get("rows", []))
 
-    msg = EmailMessage()
-    to = recipients()
-    if not to:
-        raise RuntimeError("没有配置收件人")
-    msg["From"]    = SENDER
-    msg["To"]      = ", ".join(to)
-    msg["Subject"] = f"[Nimbus Micra Weekly Report] {start} ~ {end} · {n} shipments"
-    msg.set_content(
-        f"Nimbus Micra Weekly Report — {start} to {end} (Mon-Sun)\n\n"
-        f"Created Shipments: {n}\n\n"
-        f"Full detail is in the attached CSV; the HTML version of this "
-        f"message carries the same table inline."
+    to = mailer.send(
+        subject=f"[Nimbus Micra Weekly Report] {start} ~ {end} · {n} shipments",
+        recipients=recipients(),
+        text=(f"Nimbus Micra Weekly Report — {start} to {end} (Mon-Sun)\n\n"
+              f"Created Shipments: {n}\n\n"
+              f"Full detail is in the attached CSV; the HTML version of this "
+              f"message carries the same table inline."),
+        html=render_html(snap),
+        attachments=[(f"nimbus_weekly_{start}_{end}.csv",
+                      render_csv(snap), "text", "csv")],
     )
-    msg.add_alternative(render_html(snap), subtype="html")
-    msg.add_attachment(render_csv(snap), maintype="text", subtype="csv",
-                       filename=f"nimbus_weekly_{start}_{end}.csv")
-
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
-        s.starttls()
-        s.login(SENDER, SMTP_PASSWORD)
-        s.send_message(msg, from_addr=SENDER, to_addrs=to)
     _log(f"邮件已发送 -> {', '.join(to)}（{start}~{end}, {n} 条）")
 
 
