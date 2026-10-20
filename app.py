@@ -1707,17 +1707,21 @@ def _resync_one_ship_mawb_standalone(s: dict, ship: dict):
 
 @app.route("/api/debug/probe_params")
 def api_debug_probe_params():
-    s = _sess()
-    if not s.get("token"):
-        return jsonify({"ok": False, "error": "请先登录"}), 401
-    try:
-        import weekly_report as _w
+    import weekly_report as _w
+    tok = ""
+    # 认 X-Report-Token（此时用服务器自己的 Nimbus 凭证登录），否则要求登录态
+    if _w.TRIGGER_TOKEN and request.headers.get("X-Report-Token") == _w.TRIGGER_TOKEN:
+        tok = _w._nimbus_login()
+        if not tok:
+            return jsonify({"ok": False, "error": "服务器拿不到 Nimbus token"}), 500
+    else:
+        s = _sess()
+        if not s.get("token"):
+            return jsonify({"ok": False, "error": "请先登录"}), 401
         if _w.ADMINS and (session.get("_usr") or "").strip().lower() not in _w.ADMINS:
             return jsonify({"ok": False, "error": "需要管理员权限"}), 403
-    except Exception:
-        pass
+        tok = s["token"]
 
-    tok  = s["token"]
     hdrs = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
             "Accept": "application/json, text/plain, */*", "Origin": BASE,
             "Referer": f"{BASE}/shipment-sync/shipment-sync"}
