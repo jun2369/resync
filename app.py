@@ -158,8 +158,13 @@ def _check_permission(tok: str) -> str:
 
     def _check_read():
         try:
+            # pageSearch 要求带过滤条件，否则 Nimbus 侧报错（500/400）。用一个格式
+            # 合法但不存在的 shipmentId 做探针：返回 200 且 data 为空，不读任何真实
+            # 数据，但仍能区分 401（token 失效）/ 403（无权限）。
             r = req.post(f"{BASE}/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch",
-                         json={"current": 1, "pageSize": 1}, timeout=6, headers=hdrs)
+                         json={"shipmentId": "000000000000000000000000",
+                               "operationResult": "ERROR", "current": 1, "pageSize": 1},
+                         timeout=6, headers=hdrs)
             results["read"] = r.status_code
         except Exception:
             results["read"] = None
@@ -1700,86 +1705,6 @@ def _resync_one_ship_mawb_standalone(s: dict, ship: dict):
         "state": state,
         "errorType": "MAWBMilestone",
     })
-
-# ── TEMP: parcelTrack-event 参数探测 ─────────────────────────────────
-# 确认登录时的权限探针是不是那些 400 的来源，以及补哪个参数能避开。
-# 结论出来后删掉这整段。
-
-@app.route("/api/debug/probe_params")
-def api_debug_probe_params():
-    import weekly_report as _w
-    tok = ""
-    # 认 X-Report-Token（此时用服务器自己的 Nimbus 凭证登录），否则要求登录态
-    if _w.TRIGGER_TOKEN and request.headers.get("X-Report-Token") == _w.TRIGGER_TOKEN:
-        tok = _w._nimbus_login()
-        if not tok:
-            return jsonify({"ok": False, "error": "服务器拿不到 Nimbus token"}), 500
-    else:
-        s = _sess()
-        if not s.get("token"):
-            return jsonify({"ok": False, "error": "请先登录"}), 401
-        if _w.ADMINS and (session.get("_usr") or "").strip().lower() not in _w.ADMINS:
-            return jsonify({"ok": False, "error": "需要管理员权限"}), 403
-        tok = s["token"]
-
-    hdrs = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*", "Origin": BASE,
-            "Referer": f"{BASE}/shipment-sync/shipment-sync"}
-    PS = "/api/admin/operate/tenant-sync/parcelTrack-event/pageSearch"
-    GS = "/api/admin/operate/tenant-sync/shipment-event/globalSearch"
-    RP = "/api/admin/operate/tenant-sync/parcelTrack-event/replay"
-    FAKE = "000000000000000000000000"
-
-    # 先取一个真实单号当对照组
-    real_sid = real_sn = ""
-    try:
-        r = req.post(f"{BASE}{GS}", json={"current": 1, "pageSize": 1},
-                     timeout=15, headers=hdrs)
-        it = ((r.json().get("data") or [None])[0]) or {}
-        real_sid = str(it.get("shipmentId") or "")
-        real_sn  = str(it.get("shipmentNumber") or "")
-    except Exception:
-        pass
-
-    cases = [
-        ("A", "登录探针（现状，无过滤）", PS, {"current": 1, "pageSize": 1}),
-        ("B", "补不存在的 shipmentId", PS,
-         {"shipmentId": FAKE, "current": 1, "pageSize": 1}),
-        ("C", "不存在的 id + ERROR", PS,
-         {"shipmentId": FAKE, "operationResult": "ERROR", "current": 1, "pageSize": 1}),
-        ("D", "真实 shipmentId（对照）", PS,
-         {"shipmentId": real_sid, "operationResult": "ERROR", "current": 1, "pageSize": 1}),
-        ("E", "shipmentNumber（手动添加用）", PS,
-         {"shipmentNumber": real_sn, "operationResult": "ERROR", "current": 1, "pageSize": 1}),
-        ("F", "globalSearch 无过滤（对照）", GS, {"current": 1, "pageSize": 1}),
-        ("G", "replay id=0（登录也在发）", RP, {"id": 0}),
-    ]
-
-    out = []
-    for key, label, path, payload in cases:
-        if any(v == "" for v in payload.values()):
-            out.append({"case": key, "label": label, "status": "skipped",
-                        "note": "没取到对照数据"})
-            continue
-        row = {"case": key, "label": label, "payload": payload}
-        try:
-            r = req.post(f"{BASE}{path}", json=payload, timeout=15, headers=hdrs)
-            row["status"] = r.status_code
-            try:
-                b = r.json()
-                row["body"] = {k: b.get(k) for k in ("success", "code", "msg", "total")
-                               if isinstance(b, dict) and k in b}
-            except Exception:
-                row["body"] = r.text[:200]
-        except Exception as exc:
-            row["status"] = None
-            row["body"] = f"{type(exc).__name__}: {exc}"
-        out.append(row)
-        print(f"[probe] {key} {label}: HTTP {row['status']} {row.get('body')}", flush=True)
-
-    return jsonify({"ok": True, "sample_shipmentId": real_sid,
-                    "sample_shipmentNumber": real_sn, "results": out})
-
 
 # ── Weekly report ──────────────────────────────────────────────
 
